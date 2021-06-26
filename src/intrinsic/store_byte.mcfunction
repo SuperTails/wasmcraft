@@ -7,7 +7,7 @@ scoreboard players operation %param2%0 reg %= %%256 reg
 
 function intrinsic:setptr
 
-execute at @e[tag=ptr] store result score %param0%0 reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
 
 scoreboard players operation %%temp0_store_byte reg = %ptr reg
 scoreboard players operation %%temp0_store_byte reg %= %%4 reg
@@ -34,6 +34,6 @@ execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players oper
 
 scoreboard players operation %return%0 reg += %param2%0 reg
 
-execute at @e[tag=ptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
+execute at @e[tag=memoryptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
 
 scoreboard players operation %param2%0 reg = %tempsave_store_byte reg
