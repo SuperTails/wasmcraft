@@ -63,22 +63,50 @@ const USE_GRID_CALL: bool = true;
 
 use std::collections::HashMap;
 
-fn find_end(operators: &[Operator], relative_depth: u32) -> usize {
+fn find_target(operators: &[Operator], br_idx: usize, mut relative_depth: u32) -> usize {
+    let mut labels = vec![None];
+
+    let mut checking = false;
+
+    let mut result = None;
+
     for (idx, op) in operators.iter().enumerate() {
-        if let Operator::End = op {
-            return if relative_depth == 0 {
-                idx
-            } else {
-                idx + 1 + find_end(&operators[idx + 1..], relative_depth - 1)
+        if br_idx == idx {
+            checking = true;
+        }
+
+        match op {
+            Operator::Loop { .. } => {
+                labels.push(Some(idx));
             }
+            Operator::Block { .. } => {
+                labels.push(None);
+            }
+            Operator::If { .. } => todo!(),
+            Operator::Else { .. } => todo!(),
+            Operator::End { .. } => {
+                let mut top = labels.pop().unwrap();
+                if top.is_none() {
+                    top = Some(idx);
+                }
+
+                if checking {
+                    if relative_depth == 0 {
+                        if result.is_none() {
+                            result = top;
+                        }
+                    } else {
+                        relative_depth -= 1;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
-    if relative_depth == 0 {
-        operators.len()
-    } else {
-        panic!("{:?}", relative_depth);
-    }
+    assert!(labels.is_empty());
+
+    result.unwrap()
 }
 
 struct SplitBBInfo {
@@ -101,25 +129,29 @@ fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
                 *bbs = bbs_id;
                 bbs_id += 1;
             }
-            Operator::Loop { .. } | Operator::End => {
+            Operator::End | Operator::Loop { .. } => {
                 bbs_id += 1;
                 *bbs = bbs_id;
             }
-            _ => {}
+            _ => {
+                *bbs = bbs_id;
+            }
         }
     }
+
+    println!("{:?}", op_bbs);
 
     let mut branches = HashMap::new();
 
     for (idx, op) in operators.iter().enumerate() {
         match op {
             Operator::Br { relative_depth } => {
-                let target = idx + 1 + find_end(&operators[idx + 1..], *relative_depth);
+                let target = find_target(&operators, idx, *relative_depth);
                 let target = op_bbs[target];
                 branches.insert(idx, (Label::new(func_idx, target), None));
             }
             Operator::BrIf { relative_depth } => {
-                let t_target = idx + 1 + find_end(&operators[idx + 1..], *relative_depth);
+                let t_target = find_target(&operators, idx, *relative_depth);
                 let t_target = op_bbs[t_target];
                 let f_target = op_bbs[idx + 1];
 
@@ -324,7 +356,7 @@ impl Instr {
 
                 let condreg = Register::Work(2);
 
-                body.push(format!("execute store success score {} reg if score {} reg {} {}", condreg.get_lo(), lhs.get_lo(), score_op, rhs.get_lo()));
+                body.push(format!("execute store success score {} reg if score {} reg {} {} reg", condreg.get_lo(), lhs.get_lo(), score_op, rhs.get_lo()));
 
                 condreg
             }
@@ -883,6 +915,7 @@ impl FuncBodyStream {
                 //self.basic_blocks.push(BasicBlock::new(self.basic_blocks.len()));
             }
             Return => {
+                /*
                 for l in 0..local_count {
                     let reg = Register::Work(l);
                     self.push_instr(Instr::SetLocalPtr(l));
@@ -898,6 +931,7 @@ impl FuncBodyStream {
 
                     self.push_instr(Instr::Tellraw(msg));
                 }
+                */
 
                 self.push_instr(Instr::Comment(" Pop frame".to_string()));
                 self.push_instr(Instr::PopFrame(local_count));
@@ -1040,7 +1074,6 @@ impl FuncBodyStream {
             Drop => {
                 self.push_instr(Instr::Drop);
             }
-
             Block { ty } => {
                 if ty != TypeOrFuncType::Type(Type::EmptyBlockType) {
                     todo!("Block {:?}", ty);
@@ -1094,9 +1127,14 @@ impl FuncBodyStream {
             }
 
             Loop { ty } => {
+                // Branch to next block
+                self.push_instr(Instr::Branch(Label::new(func_idx, self.basic_blocks.len())));
+
                 self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
 
-                println!("TODO: Loop {:?}", ty);
+                if ty != TypeOrFuncType::Type(Type::EmptyBlockType) {
+                    todo!("Block {:?}", ty);
+                }
 
                 self.depth += 1;
             }
@@ -1111,7 +1149,7 @@ impl FuncBodyStream {
             BrIf { .. } => {
                 let reg = Register::Work(0);
 
-                self.push_instr(Instr::PopValueInto(reg));
+                self.push_instr(Instr::PopI32Into(reg));
 
                 let (t_target, f_target) = branches.unwrap();
                 let f_target = f_target.as_ref().unwrap();
@@ -1441,6 +1479,8 @@ pub fn run() {
         println!("F: {:?}", func.0)
     }
 
+    save_datapack(mc_functions.clone(), &wasm_file);
+
     let ir_result = run_ir(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
 
     let cmd_result = run_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
@@ -1455,7 +1495,6 @@ pub fn run() {
 
     println!("Returned with {:?}", ir_val);
 
-    save_datapack(mc_functions, &wasm_file);
 }
 
 fn run_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
@@ -2119,6 +2158,11 @@ mod test {
     #[test]
     fn arithmetic2() {
         test_whole_program(Path::new("../arithmetic2.wasm"), -11);
+    }
+
+    #[test]
+    fn for_loop() {
+        test_whole_program(Path::new("../for_loop.wasm"), 45);
     }
 
     #[test]
