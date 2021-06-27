@@ -1,0 +1,2369 @@
+========= Module
+CodeSectionStart { count: 2, range: Range { start: 72, end: 121 }, size: 48 }
+End
+Doing function 0
+Doing function 1
+F: "__wasm0_0"
+F: "__wasm0_1"
+F: "__wasm0_2"
+F: "__wasm1_0"
+F: "__wasm1_1"
+F: "__wasm1_2"
+F: "__wasm1_3"
+F: "setup"
+F: "dyn_branch"
+F: "_start"
+Comment("Push frame 4")
+PushFrame(4)
+Comment("I32Const { value: 3 }")
+PushI32Const(3)
+Comment("LocalSet { local_index: 0 }")
+PopValueInto(Work(0))
+SetLocalPtr(0)
+StoreLocal(Work(0))
+Comment("I32Const { value: 5 }")
+PushI32Const(5)
+Comment("LocalSet { local_index: 1 }")
+PopValueInto(Work(0))
+SetLocalPtr(1)
+StoreLocal(Work(0))
+Comment("I32Const { value: 7 }")
+PushI32Const(7)
+Comment("LocalSet { local_index: 2 }")
+PopValueInto(Work(0))
+SetLocalPtr(2)
+StoreLocal(Work(0))
+Comment("LocalGet { local_index: 0 }")
+SetLocalPtr(0)
+LoadLocal(Work(0))
+PushValueFrom(Work(0))
+Comment("LocalGet { local_index: 1 }")
+SetLocalPtr(1)
+LoadLocal(Work(0))
+PushValueFrom(Work(0))
+Comment("LocalGet { local_index: 2 }")
+SetLocalPtr(2)
+LoadLocal(Work(0))
+PushValueFrom(Work(0))
+Comment("Call { function_index: 0 }")
+Comment("#   wasm:__wasm0_0")
+PopValueInto(Param(2))
+PopValueInto(Param(1))
+PopValueInto(Param(0))
+Comment("  Push return address")
+PushReturnAddress(Label { func_idx: CodeFuncIdx(1), idx: 1 })
+Branch(Label { func_idx: CodeFuncIdx(0), idx: 0 })
+Comment("Push frame 23")
+PushFrame(23)
+Comment("#   Parameter 0")
+SetLocalPtr(0)
+StoreLocal(Param(0))
+Comment("#   Parameter 1")
+SetLocalPtr(1)
+StoreLocal(Param(1))
+Comment("#   Parameter 2")
+SetLocalPtr(2)
+StoreLocal(Param(2))
+Comment("I32Const { value: 42 }")
+PushI32Const(42)
+Comment("I32Const { value: 0 }")
+PushI32Const(0)
+Comment("I32Store { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }")
+PopI32Into(Work(1))
+PopI32Into(Work(0))
+AddI32Const(Work(0), 0)
+SetMemPtr(Work(0))
+StoreI32(Work(1), 2)
+Comment("I32Const { value: 0 }")
+PushI32Const(0)
+Comment("I32Load { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }")
+PopI32Into(Work(0))
+AddI32Const(Work(0), 0)
+SetMemPtr(Work(0))
+LoadI32(Work(0), 2)
+PushI32From(Work(0))
+Comment("Return")
+Comment(" Pop frame")
+PopFrame(23)
+Comment(" Save return value")
+PopI32Into(Return)
+Comment(" Pop return address")
+PopI32Into(Work(0))
+DynBranch(Work(0), None)
+Branched to 4 (4, 0)
+PushI32From(Return)
+Comment("LocalSet { local_index: 3 }")
+PopValueInto(Work(0))
+SetLocalPtr(3)
+StoreLocal(Work(0))
+Comment("LocalGet { local_index: 3 }")
+SetLocalPtr(3)
+LoadLocal(Work(0))
+PushValueFrom(Work(0))
+Comment("Return")
+Comment(" Pop frame")
+PopFrame(4)
+Comment(" Save return value")
+PopI32Into(Return)
+Comment(" Pop return address")
+PopI32Into(Work(0))
+DynBranch(Work(0), None)
+Converting wasm:__wasm0_0
+Converting wasm:__wasm0_1
+Converting wasm:__wasm0_2
+Converting wasm:__wasm1_0
+Converting wasm:__wasm1_1
+Converting wasm:__wasm1_2
+Converting wasm:__wasm1_3
+Converting wasm:setup
+Converting wasm:dyn_branch
+Converting wasm:_start
+# Set up scoreboard
+scoreboard objectives remove wasm
+scoreboard objectives add wasm dummy
+# scoreboard objectives setdisplay sidebar wasm
+scoreboard objectives remove reg
+scoreboard objectives add reg dummy
+# Remove old armor stand pointers
+kill @e[tag=memoryptr]
+kill @e[tag=localptr]
+kill @e[tag=frameptr]
+kill @e[tag=stackptr]
+kill @e[tag=globalptr]
+# Add armor stand pointers
+summon minecraft:armor_stand 0 0 8 {Marker:1b,Tags:["memoryptr"],CustomName:'"memoryptr"',CustomNameVisible:1b}
+summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:["localptr"],CustomName:'"localptr"',CustomNameVisible:1b}
+summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:["frameptr"],CustomName:'"frameptr"',CustomNameVisible:1b}
+summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:["stackptr"],CustomName:'"stackptr"',CustomNameVisible:1b}
+summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:["globalptr"],CustomName:'"globalptr"',CustomNameVisible:1b}
+scoreboard players set %stackptr wasm 0
+scoreboard players set %frameptr wasm 0
+scoreboard players set %%-1 reg -1
+scoreboard players set %%0 reg 0
+scoreboard players set %%1 reg 1
+scoreboard players set %%2 reg 2
+scoreboard players set %%4 reg 4
+scoreboard players set %%8 reg 8
+scoreboard players set %%16 reg 16
+scoreboard players set %%SIXTEEN reg 16
+scoreboard players set %%256 reg 256
+scoreboard players set %%65536 reg 65536
+scoreboard players set %%16777216 reg 16777216
+# Make stack
+fill 0 0 0 30 0 0 minecraft:air
+fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+# Make memory
+fill 0 0 8 8 255 15 minecraft:air
+fill 0 0 8 8 255 15 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+fill 8 0 8 16 255 15 minecraft:air
+fill 8 0 8 16 255 15 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+# Make globals
+fill 0 0 3 1 0 4 minecraft:air
+fill 0 0 3 1 0 4 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:0}}}
+data modify block 0 0 3 RecordItem.tag.Memory set value 66560
+# Make commands
+setblock 0 0 -1 minecraft:air replace
+setblock 0 0 -1 minecraft:command_block{Command:"function wasm:__wasm0_0"} replace
+setblock 1 0 -1 minecraft:air replace
+setblock 1 0 -1 minecraft:command_block{Command:"function wasm:__wasm0_1"} replace
+setblock 2 0 -1 minecraft:air replace
+setblock 2 0 -1 minecraft:command_block{Command:"function wasm:__wasm0_2"} replace
+setblock 3 0 -1 minecraft:air replace
+setblock 3 0 -1 minecraft:command_block{Command:"function wasm:__wasm1_0"} replace
+setblock 4 0 -1 minecraft:air replace
+setblock 4 0 -1 minecraft:command_block{Command:"function wasm:__wasm1_1"} replace
+setblock 5 0 -1 minecraft:air replace
+setblock 5 0 -1 minecraft:command_block{Command:"function wasm:__wasm1_2"} replace
+setblock 6 0 -1 minecraft:air replace
+setblock 6 0 -1 minecraft:command_block{Command:"function wasm:__wasm1_3"} replace
+Executed 58 commands from function 'wasm:setup'
+# PushI32Const(-1)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value -1
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value -1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+setblock 3 1 -1 minecraft:redstone_block destroy
+Executed 5 commands from function 'wasm:_start'
+setblock ~ ~1 ~ minecraft:air replace
+# Comment("Push frame 4")
+# Push frame 4
+# PushFrame(4)
+# Push frame with 4 locals
+execute at @e[tag=frameptr] run fill ~0 ~0 ~0 ~3 ~0 ~1 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+fill ~0 ~0 ~0 ~3 ~0 ~1 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~4 ~0 ~0
+tp @s ~4 ~0 ~0
+# Comment("I32Const { value: 3 }")
+# I32Const { value: 3 }
+# PushI32Const(3)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 3
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 3
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("LocalSet { local_index: 0 }")
+# LocalSet { local_index: 0 }
+# PopValueInto(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# SetLocalPtr(0)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-1 0 1
+tp @s ~-1 0 1
+# StoreLocal(Work(0))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+# Comment("I32Const { value: 5 }")
+# I32Const { value: 5 }
+# PushI32Const(5)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 5
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 5
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("LocalSet { local_index: 1 }")
+# LocalSet { local_index: 1 }
+# PopValueInto(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# SetLocalPtr(1)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-2 0 1
+tp @s ~-2 0 1
+# StoreLocal(Work(0))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+# Comment("I32Const { value: 7 }")
+# I32Const { value: 7 }
+# PushI32Const(7)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 7
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 7
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("LocalSet { local_index: 2 }")
+# LocalSet { local_index: 2 }
+# PopValueInto(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# SetLocalPtr(2)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-3 0 1
+tp @s ~-3 0 1
+# StoreLocal(Work(0))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+# Comment("LocalGet { local_index: 0 }")
+# LocalGet { local_index: 0 }
+# SetLocalPtr(0)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-1 0 1
+tp @s ~-1 0 1
+# LoadLocal(Work(0))
+execute at @e[tag=localptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=localptr] store result score %work%0%hi reg run data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+# PushValueFrom(Work(0))
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+# Comment("LocalGet { local_index: 1 }")
+# LocalGet { local_index: 1 }
+# SetLocalPtr(1)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-2 0 1
+tp @s ~-2 0 1
+# LoadLocal(Work(0))
+execute at @e[tag=localptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=localptr] store result score %work%0%hi reg run data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+# PushValueFrom(Work(0))
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+# Comment("LocalGet { local_index: 2 }")
+# LocalGet { local_index: 2 }
+# SetLocalPtr(2)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-3 0 1
+tp @s ~-3 0 1
+# LoadLocal(Work(0))
+execute at @e[tag=localptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=localptr] store result score %work%0%hi reg run data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+# PushValueFrom(Work(0))
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+# Comment("Call { function_index: 0 }")
+# Call { function_index: 0 }
+# Comment("#   wasm:__wasm0_0")
+# #   wasm:__wasm0_0
+# PopValueInto(Param(2))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%2%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%2%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# PopValueInto(Param(1))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%1%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%1%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# PopValueInto(Param(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%0%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %param%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# Comment("  Push return address")
+# Push return address
+# PushReturnAddress(Label { func_idx: CodeFuncIdx(1), idx: 1 })
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 4
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 4
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Branch(Label { func_idx: CodeFuncIdx(0), idx: 0 })
+# Jump to __wasm0_0
+setblock 0 1 -1 minecraft:redstone_block destroy
+Executed 143 commands from function 'wasm:__wasm1_0'
+setblock ~ ~1 ~ minecraft:air replace
+# Comment("Push frame 23")
+# Push frame 23
+# PushFrame(23)
+# Push frame with 23 locals
+execute at @e[tag=frameptr] run fill ~0 ~0 ~0 ~22 ~0 ~1 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+fill ~0 ~0 ~0 ~22 ~0 ~1 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:1}}}
+execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~23 ~0 ~0
+tp @s ~23 ~0 ~0
+# Comment("#   Parameter 0")
+# #   Parameter 0
+# SetLocalPtr(0)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-1 0 1
+tp @s ~-1 0 1
+# StoreLocal(Param(0))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %param%0%lo reg
+scoreboard players get %param%0%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %param%0%hi reg
+scoreboard players get %param%0%hi reg
+# Comment("#   Parameter 1")
+# #   Parameter 1
+# SetLocalPtr(1)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-2 0 1
+tp @s ~-2 0 1
+# StoreLocal(Param(1))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %param%1%lo reg
+scoreboard players get %param%1%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %param%1%hi reg
+scoreboard players get %param%1%hi reg
+# Comment("#   Parameter 2")
+# #   Parameter 2
+# SetLocalPtr(2)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-3 0 1
+tp @s ~-3 0 1
+# StoreLocal(Param(2))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %param%2%lo reg
+scoreboard players get %param%2%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %param%2%hi reg
+scoreboard players get %param%2%hi reg
+# Comment("I32Const { value: 42 }")
+# I32Const { value: 42 }
+# PushI32Const(42)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 42
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 42
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("I32Const { value: 0 }")
+# I32Const { value: 0 }
+# PushI32Const(0)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 0
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 0
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("I32Store { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }")
+# I32Store { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }
+# PopI32Into(Work(1))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %work%1%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# PopI32Into(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# AddI32Const(Work(0), 0)
+# SetMemPtr(Work(0))
+scoreboard players operation %ptr reg = %work%0%lo reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+# StoreI32(Work(1), 2)
+scoreboard players operation %param0%0 reg = %work%1%lo reg
+function intrinsic:store_word
+scoreboard players operation %%align wasm = %ptr reg
+scoreboard players operation %%align wasm %= %%4 reg
+execute if score %%align wasm matches 0..0 run execute at @e[tag=memoryptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %param0%0 reg
+execute unless score %%align wasm matches 0..0 run function intrinsic:store_word_unaligned
+function intrinsic:store_word_unaligned
+# Arguments
+# %ptr      - Address to store at
+# %param0%0 - Word to be stored
+scoreboard players operation %%temp0_swu reg = %param0%0 reg
+# FIXME: This may not actually work like an `and`
+scoreboard players operation %param2%0 reg = %%temp0_swu reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:store_byte
+# arguments:
+# %ptr - The location to write to
+# %param2%0 - The byte to write
+scoreboard players operation %tempsave_store_byte reg = %param2%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %%temp0_store_byte reg = %ptr reg
+scoreboard players operation %%temp0_store_byte reg %= %%4 reg
+# 0xFFFF_FF00
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players set %param1%0 reg -256
+# 0xFFFF_00FF
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players set %param1%0 reg -65281
+# 0xFF00_FFFF
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players set %param1%0 reg -16711681
+scoreboard players set %param1%0 reg -16711681
+# 0x00FF_FFFF
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players set %param1%0 reg 16777215
+function intrinsic:and
+scoreboard players set %return%0 reg 0
+# First half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# Second half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# %param2%0 *= 1 << 0
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players operation %param2%0 reg *= %%1 reg
+# %param2%0 *= 1 << 8
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players operation %param2%0 reg *= %%256 reg
+# %param2%0 *= 1 << 16
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players operation %param2%0 reg *= %%65536 reg
+scoreboard players operation %param2%0 reg *= %%65536 reg
+# %param2%0 *= 1 << 24
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players operation %param2%0 reg *= %%16777216 reg
+scoreboard players operation %return%0 reg += %param2%0 reg
+execute at @e[tag=memoryptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
+scoreboard players get %return%0 reg
+scoreboard players operation %param2%0 reg = %tempsave_store_byte reg
+scoreboard players add %ptr reg 1
+scoreboard players operation %param0%0 reg = %%temp0_swu reg
+scoreboard players set %param1%0 reg 8
+function intrinsic:lshr
+# Code (from stack overflow post that I need to link in a moment)
+# // logical shift right (unsigned)
+# if (shift > 15) {
+# a = 0; // more than 15, becomes zero
+# } else if (shift > 0) {
+# if (a < 0) {
+# // deal with the sign bit (15)
+# a += -32768;
+# a /= powtab[shift];
+# a += powtab[15 - shift];
+# } else {
+# a /= powtab[shift];
+# }
+# }
+# 
+# Pseudo-datapack code (for 32-bit integers)
+# 
+# lshr:
+# if (shift > 31) { a = 0 }
+# if (shift > 0) { call inner }
+# 
+# inner:
+# pow = powtab[shift] # but how to calculate this??
+# cond = a < 0
+# if (cond) { a += i32::MIN }
+# a /= pow
+# if (cond) { a += powtab[15 - shift] }
+# %param0%0 : a (mutated, also the return value)
+# %param1%0 : shift (clobbered)
+execute if score %param1%0 reg matches 32.. run scoreboard players set %param0%0 reg 0
+execute if score %param1%0 reg matches 1.. run function intrinsic:lshr/inner
+function intrinsic:lshr/inner
+execute store success score %%temp0_lshr_inner reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+# %%temp1_lshr_inner = powtab[shift]
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+scoreboard players operation %param0%0 reg /= %%temp1_lshr_inner reg
+# %%temp1_lshr_inner = powtab[31 - shift]
+scoreboard players operation %param1%0 reg *= %%-1 reg
+scoreboard players add %param1%0 reg 31
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players operation %param0%0 reg += %%temp1_lshr_inner reg
+scoreboard players operation %param2%0 reg = %param0%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:store_byte
+# arguments:
+# %ptr - The location to write to
+# %param2%0 - The byte to write
+scoreboard players operation %tempsave_store_byte reg = %param2%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %%temp0_store_byte reg = %ptr reg
+scoreboard players operation %%temp0_store_byte reg %= %%4 reg
+# 0xFFFF_FF00
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players set %param1%0 reg -256
+# 0xFFFF_00FF
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players set %param1%0 reg -65281
+# 0xFF00_FFFF
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players set %param1%0 reg -16711681
+# 0x00FF_FFFF
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players set %param1%0 reg 16777215
+scoreboard players set %param1%0 reg 16777215
+function intrinsic:and
+scoreboard players set %return%0 reg 0
+# First half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# Second half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# %param2%0 *= 1 << 0
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players operation %param2%0 reg *= %%1 reg
+# %param2%0 *= 1 << 8
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players operation %param2%0 reg *= %%256 reg
+# %param2%0 *= 1 << 16
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players operation %param2%0 reg *= %%65536 reg
+# %param2%0 *= 1 << 24
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players operation %param2%0 reg *= %%16777216 reg
+scoreboard players operation %param2%0 reg *= %%16777216 reg
+scoreboard players operation %return%0 reg += %param2%0 reg
+execute at @e[tag=memoryptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
+scoreboard players get %return%0 reg
+scoreboard players operation %param2%0 reg = %tempsave_store_byte reg
+scoreboard players add %ptr reg 1
+scoreboard players operation %param0%0 reg = %%temp0_swu reg
+scoreboard players set %param1%0 reg 16
+function intrinsic:lshr
+# Code (from stack overflow post that I need to link in a moment)
+# // logical shift right (unsigned)
+# if (shift > 15) {
+# a = 0; // more than 15, becomes zero
+# } else if (shift > 0) {
+# if (a < 0) {
+# // deal with the sign bit (15)
+# a += -32768;
+# a /= powtab[shift];
+# a += powtab[15 - shift];
+# } else {
+# a /= powtab[shift];
+# }
+# }
+# 
+# Pseudo-datapack code (for 32-bit integers)
+# 
+# lshr:
+# if (shift > 31) { a = 0 }
+# if (shift > 0) { call inner }
+# 
+# inner:
+# pow = powtab[shift] # but how to calculate this??
+# cond = a < 0
+# if (cond) { a += i32::MIN }
+# a /= pow
+# if (cond) { a += powtab[15 - shift] }
+# %param0%0 : a (mutated, also the return value)
+# %param1%0 : shift (clobbered)
+execute if score %param1%0 reg matches 32.. run scoreboard players set %param0%0 reg 0
+execute if score %param1%0 reg matches 1.. run function intrinsic:lshr/inner
+function intrinsic:lshr/inner
+execute store success score %%temp0_lshr_inner reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+# %%temp1_lshr_inner = powtab[shift]
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+scoreboard players operation %param0%0 reg /= %%temp1_lshr_inner reg
+# %%temp1_lshr_inner = powtab[31 - shift]
+scoreboard players operation %param1%0 reg *= %%-1 reg
+scoreboard players add %param1%0 reg 31
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players operation %param0%0 reg += %%temp1_lshr_inner reg
+scoreboard players operation %param2%0 reg = %param0%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:store_byte
+# arguments:
+# %ptr - The location to write to
+# %param2%0 - The byte to write
+scoreboard players operation %tempsave_store_byte reg = %param2%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %%temp0_store_byte reg = %ptr reg
+scoreboard players operation %%temp0_store_byte reg %= %%4 reg
+# 0xFFFF_FF00
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players set %param1%0 reg -256
+scoreboard players set %param1%0 reg -256
+# 0xFFFF_00FF
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players set %param1%0 reg -65281
+# 0xFF00_FFFF
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players set %param1%0 reg -16711681
+# 0x00FF_FFFF
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players set %param1%0 reg 16777215
+function intrinsic:and
+scoreboard players set %return%0 reg 0
+# First half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# Second half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# %param2%0 *= 1 << 0
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players operation %param2%0 reg *= %%1 reg
+scoreboard players operation %param2%0 reg *= %%1 reg
+# %param2%0 *= 1 << 8
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players operation %param2%0 reg *= %%256 reg
+# %param2%0 *= 1 << 16
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players operation %param2%0 reg *= %%65536 reg
+# %param2%0 *= 1 << 24
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players operation %param2%0 reg *= %%16777216 reg
+scoreboard players operation %return%0 reg += %param2%0 reg
+execute at @e[tag=memoryptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
+scoreboard players get %return%0 reg
+scoreboard players operation %param2%0 reg = %tempsave_store_byte reg
+scoreboard players add %ptr reg 1
+scoreboard players operation %param0%0 reg = %%temp0_swu reg
+scoreboard players set %param1%0 reg 24
+function intrinsic:lshr
+# Code (from stack overflow post that I need to link in a moment)
+# // logical shift right (unsigned)
+# if (shift > 15) {
+# a = 0; // more than 15, becomes zero
+# } else if (shift > 0) {
+# if (a < 0) {
+# // deal with the sign bit (15)
+# a += -32768;
+# a /= powtab[shift];
+# a += powtab[15 - shift];
+# } else {
+# a /= powtab[shift];
+# }
+# }
+# 
+# Pseudo-datapack code (for 32-bit integers)
+# 
+# lshr:
+# if (shift > 31) { a = 0 }
+# if (shift > 0) { call inner }
+# 
+# inner:
+# pow = powtab[shift] # but how to calculate this??
+# cond = a < 0
+# if (cond) { a += i32::MIN }
+# a /= pow
+# if (cond) { a += powtab[15 - shift] }
+# %param0%0 : a (mutated, also the return value)
+# %param1%0 : shift (clobbered)
+execute if score %param1%0 reg matches 32.. run scoreboard players set %param0%0 reg 0
+execute if score %param1%0 reg matches 1.. run function intrinsic:lshr/inner
+function intrinsic:lshr/inner
+execute store success score %%temp0_lshr_inner reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+# %%temp1_lshr_inner = powtab[shift]
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+scoreboard players operation %param0%0 reg /= %%temp1_lshr_inner reg
+# %%temp1_lshr_inner = powtab[31 - shift]
+scoreboard players operation %param1%0 reg *= %%-1 reg
+scoreboard players add %param1%0 reg 31
+function intrinsic:lshr/getshift
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %%temp1_lshr_inner reg 1
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %%temp1_lshr_inner reg 2
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %%temp1_lshr_inner reg 4
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %%temp1_lshr_inner reg 8
+execute if score %param1%0 reg matches 4..4 run scoreboard players set %%temp1_lshr_inner reg 16
+execute if score %param1%0 reg matches 5..5 run scoreboard players set %%temp1_lshr_inner reg 32
+execute if score %param1%0 reg matches 6..6 run scoreboard players set %%temp1_lshr_inner reg 64
+execute if score %param1%0 reg matches 7..7 run scoreboard players set %%temp1_lshr_inner reg 128
+scoreboard players set %%temp1_lshr_inner reg 128
+execute if score %param1%0 reg matches 8..8 run scoreboard players set %%temp1_lshr_inner reg 256
+execute if score %param1%0 reg matches 9..9 run scoreboard players set %%temp1_lshr_inner reg 512
+execute if score %param1%0 reg matches 10..10 run scoreboard players set %%temp1_lshr_inner reg 1024
+execute if score %param1%0 reg matches 11..11 run scoreboard players set %%temp1_lshr_inner reg 2048
+execute if score %param1%0 reg matches 12..12 run scoreboard players set %%temp1_lshr_inner reg 4096
+execute if score %param1%0 reg matches 13..13 run scoreboard players set %%temp1_lshr_inner reg 8192
+execute if score %param1%0 reg matches 14..14 run scoreboard players set %%temp1_lshr_inner reg 16384
+execute if score %param1%0 reg matches 15..15 run scoreboard players set %%temp1_lshr_inner reg 32768
+execute if score %param1%0 reg matches 16..16 run scoreboard players set %%temp1_lshr_inner reg 65536
+execute if score %param1%0 reg matches 17..17 run scoreboard players set %%temp1_lshr_inner reg 131072
+execute if score %param1%0 reg matches 18..18 run scoreboard players set %%temp1_lshr_inner reg 262144
+execute if score %param1%0 reg matches 19..19 run scoreboard players set %%temp1_lshr_inner reg 524288
+execute if score %param1%0 reg matches 20..20 run scoreboard players set %%temp1_lshr_inner reg 1048576
+execute if score %param1%0 reg matches 21..21 run scoreboard players set %%temp1_lshr_inner reg 2097152
+execute if score %param1%0 reg matches 22..22 run scoreboard players set %%temp1_lshr_inner reg 4194304
+execute if score %param1%0 reg matches 23..23 run scoreboard players set %%temp1_lshr_inner reg 8388608
+execute if score %param1%0 reg matches 24..24 run scoreboard players set %%temp1_lshr_inner reg 16777216
+execute if score %param1%0 reg matches 25..25 run scoreboard players set %%temp1_lshr_inner reg 33554432
+execute if score %param1%0 reg matches 26..26 run scoreboard players set %%temp1_lshr_inner reg 67108864
+execute if score %param1%0 reg matches 27..27 run scoreboard players set %%temp1_lshr_inner reg 134217728
+execute if score %param1%0 reg matches 28..28 run scoreboard players set %%temp1_lshr_inner reg 268435456
+execute if score %param1%0 reg matches 29..29 run scoreboard players set %%temp1_lshr_inner reg 536870912
+execute if score %param1%0 reg matches 30..30 run scoreboard players set %%temp1_lshr_inner reg 1073741824
+execute if score %param1%0 reg matches 31..31 run scoreboard players set %%temp1_lshr_inner reg -2147483648
+execute if score %%temp0_lshr_inner reg matches 1..1 run scoreboard players operation %param0%0 reg += %%temp1_lshr_inner reg
+scoreboard players operation %param2%0 reg = %param0%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:store_byte
+# arguments:
+# %ptr - The location to write to
+# %param2%0 - The byte to write
+scoreboard players operation %tempsave_store_byte reg = %param2%0 reg
+scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %%temp0_store_byte reg = %ptr reg
+scoreboard players operation %%temp0_store_byte reg %= %%4 reg
+# 0xFFFF_FF00
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players set %param1%0 reg -256
+# 0xFFFF_00FF
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players set %param1%0 reg -65281
+scoreboard players set %param1%0 reg -65281
+# 0xFF00_FFFF
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players set %param1%0 reg -16711681
+# 0x00FF_FFFF
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players set %param1%0 reg 16777215
+function intrinsic:and
+scoreboard players set %return%0 reg 0
+# First half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# Second half:
+# 1-4
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 5-8
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 9-12
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# 13-16
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+function intrinsic:and_inner
+# return <<= 1
+scoreboard players operation %return%0 reg += %return%0 reg
+# if param0 < 0 && param1 < 0 { c += 1 }
+execute if score %param0%0 reg matches ..-1 if score %param1%0 reg matches ..-1 run scoreboard players add %return%0 reg 1
+scoreboard players operation %param0%0 reg += %param0%0 reg
+scoreboard players operation %param1%0 reg += %param1%0 reg
+# %param2%0 *= 1 << 0
+execute if score %%temp0_store_byte reg matches 0..0 run scoreboard players operation %param2%0 reg *= %%1 reg
+# %param2%0 *= 1 << 8
+execute if score %%temp0_store_byte reg matches 1..1 run scoreboard players operation %param2%0 reg *= %%256 reg
+scoreboard players operation %param2%0 reg *= %%256 reg
+# %param2%0 *= 1 << 16
+execute if score %%temp0_store_byte reg matches 2..2 run scoreboard players operation %param2%0 reg *= %%65536 reg
+# %param2%0 *= 1 << 24
+execute if score %%temp0_store_byte reg matches 3..3 run scoreboard players operation %param2%0 reg *= %%16777216 reg
+scoreboard players operation %return%0 reg += %param2%0 reg
+execute at @e[tag=memoryptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %return%0 reg
+scoreboard players get %return%0 reg
+scoreboard players operation %param2%0 reg = %tempsave_store_byte reg
+# Comment("I32Const { value: 0 }")
+# I32Const { value: 0 }
+# PushI32Const(0)
+execute at @e[tag=stackptr] run data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 0
+data modify block ~0 ~0 ~0 RecordItem.tag.Memory set value 0
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("I32Load { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }")
+# I32Load { memarg: MemoryImmediate { align: 2, offset: 0, memory: 0 } }
+# PopI32Into(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# AddI32Const(Work(0), 0)
+# SetMemPtr(Work(0))
+scoreboard players operation %ptr reg = %work%0%lo reg
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+# LoadI32(Work(0), 2)
+function intrinsic:load_word_unaligned
+# Arguments
+# %ptr
+# Return value is %return%0
+function intrinsic:load_byte
+# %ptr - The location to read from
+# %param0%0 - The return value
+# Clobbers %param1%0
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %param1%0 reg = %ptr reg
+scoreboard players operation %param1%0 reg %= %%4 reg
+# 1 << (8 * 3)
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %param1%0 reg 16777216
+scoreboard players set %param1%0 reg 16777216
+# 1 << (8 * 2)
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %param1%0 reg 65536
+# 1 << (8 * 1)
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %param1%0 reg 256
+# 1 << (8 * 0)
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %param1%0 reg 1
+scoreboard players operation %param0%0 reg *= %param1%0 reg
+# -- %param0%0 >>= 24 --
+execute store success score %%temp0_load_byte reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+scoreboard players operation %param0%0 reg /= %%16777216 reg
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players add %param0%0 reg 128
+scoreboard players operation %return%0 reg = %param0%0 reg
+scoreboard players add %ptr reg 1
+function intrinsic:load_byte
+# %ptr - The location to read from
+# %param0%0 - The return value
+# Clobbers %param1%0
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %param1%0 reg = %ptr reg
+scoreboard players operation %param1%0 reg %= %%4 reg
+# 1 << (8 * 3)
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %param1%0 reg 16777216
+# 1 << (8 * 2)
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %param1%0 reg 65536
+scoreboard players set %param1%0 reg 65536
+# 1 << (8 * 1)
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %param1%0 reg 256
+# 1 << (8 * 0)
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %param1%0 reg 1
+scoreboard players operation %param0%0 reg *= %param1%0 reg
+# -- %param0%0 >>= 24 --
+execute store success score %%temp0_load_byte reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+scoreboard players operation %param0%0 reg /= %%16777216 reg
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players add %param0%0 reg 128
+scoreboard players operation %param0%0 reg *= %%256 reg
+scoreboard players operation %return%0 reg += %param0%0 reg
+scoreboard players add %ptr reg 1
+function intrinsic:load_byte
+# %ptr - The location to read from
+# %param0%0 - The return value
+# Clobbers %param1%0
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %param1%0 reg = %ptr reg
+scoreboard players operation %param1%0 reg %= %%4 reg
+# 1 << (8 * 3)
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %param1%0 reg 16777216
+# 1 << (8 * 2)
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %param1%0 reg 65536
+# 1 << (8 * 1)
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %param1%0 reg 256
+scoreboard players set %param1%0 reg 256
+# 1 << (8 * 0)
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %param1%0 reg 1
+scoreboard players operation %param0%0 reg *= %param1%0 reg
+# -- %param0%0 >>= 24 --
+execute store success score %%temp0_load_byte reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+scoreboard players operation %param0%0 reg /= %%16777216 reg
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players add %param0%0 reg 128
+scoreboard players operation %param0%0 reg *= %%65536 reg
+scoreboard players operation %return%0 reg += %param0%0 reg
+scoreboard players add %ptr reg 1
+function intrinsic:load_byte
+# %ptr - The location to read from
+# %param0%0 - The return value
+# Clobbers %param1%0
+function intrinsic:setptr
+scoreboard players operation %%ptr reg = %ptr reg
+scoreboard players operation %%ptr reg /= %%4 reg
+scoreboard players operation %z reg = %%ptr reg
+scoreboard players operation %z reg %= %%8 reg
+scoreboard players operation %%ptr reg /= %%8 reg
+scoreboard players operation %y reg = %%ptr reg
+scoreboard players operation %y reg %= %%256 reg
+scoreboard players operation %%ptr reg /= %%256 reg
+scoreboard players operation %x reg = %%ptr reg
+execute as @e[tag=memoryptr] store result entity @s Pos[0] double 1 run scoreboard players get %x reg
+scoreboard players get %x reg
+execute as @e[tag=memoryptr] store result entity @s Pos[1] double 1 run scoreboard players get %y reg
+scoreboard players get %y reg
+execute as @e[tag=memoryptr] store result entity @s Pos[2] double 1 run scoreboard players get %z reg
+scoreboard players get %z reg
+execute as @e[tag=memoryptr] at @e[tag=memoryptr] run tp @s ~0 ~0 ~8
+tp @s ~0 ~0 ~8
+execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+scoreboard players operation %param1%0 reg = %ptr reg
+scoreboard players operation %param1%0 reg %= %%4 reg
+# 1 << (8 * 3)
+execute if score %param1%0 reg matches 0..0 run scoreboard players set %param1%0 reg 16777216
+# 1 << (8 * 2)
+execute if score %param1%0 reg matches 1..1 run scoreboard players set %param1%0 reg 65536
+# 1 << (8 * 1)
+execute if score %param1%0 reg matches 2..2 run scoreboard players set %param1%0 reg 256
+# 1 << (8 * 0)
+execute if score %param1%0 reg matches 3..3 run scoreboard players set %param1%0 reg 1
+scoreboard players set %param1%0 reg 1
+scoreboard players operation %param0%0 reg *= %param1%0 reg
+# -- %param0%0 >>= 24 --
+execute store success score %%temp0_load_byte reg if score %param0%0 reg matches ..-1
+# Have to split this in two because you can't actually subtract i32::MAX
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+scoreboard players operation %param0%0 reg /= %%16777216 reg
+execute if score %%temp0_load_byte reg matches 1..1 run scoreboard players add %param0%0 reg 128
+scoreboard players operation %param0%0 reg *= %%16777216 reg
+scoreboard players operation %return%0 reg += %param0%0 reg
+scoreboard players operation %work%0%lo reg = %return%0 reg
+# PushI32From(Work(0))
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("Return")
+# Return
+# Comment(" Pop frame")
+# Pop frame
+# PopFrame(23)
+execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~-23 ~0 ~0
+tp @s ~-23 ~0 ~0
+execute at @e[tag=frameptr] run fill ~0 ~0 ~0 ~22 ~0 ~1 minecraft:air
+fill ~0 ~0 ~0 ~22 ~0 ~1 minecraft:air
+# Comment(" Save return value")
+# Save return value
+# PopI32Into(Return)
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %return%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# Comment(" Pop return address")
+# Pop return address
+# PopI32Into(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# DynBranch(Work(0), None)
+function wasm:dyn_branch
+# wasm:__wasm0_0
+execute if score %work%0%lo reg matches 0..0 run setblock 0 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm0_1
+execute if score %work%0%lo reg matches 1..1 run setblock 1 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm0_2
+execute if score %work%0%lo reg matches 2..2 run setblock 2 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_0
+execute if score %work%0%lo reg matches 3..3 run setblock 3 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_1
+execute if score %work%0%lo reg matches 4..4 run setblock 4 1 -1 minecraft:redstone_block destroy
+setblock 4 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_2
+execute if score %work%0%lo reg matches 5..5 run setblock 5 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_3
+execute if score %work%0%lo reg matches 6..6 run setblock 6 1 -1 minecraft:redstone_block destroy
+# wasm:setup
+execute if score %work%0%lo reg matches 7..7 run setblock 7 1 -1 minecraft:redstone_block destroy
+execute unless score %work%0%lo reg matches 0..7 run tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]
+Executed 1767 commands from function 'wasm:__wasm0_0'
+setblock ~ ~1 ~ minecraft:air replace
+# PushI32From(Return)
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %return%lo reg
+scoreboard players get %return%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~0 ~0
+tp @s ~2 ~0 ~0
+scoreboard players add %stackptr wasm 2
+# Comment("LocalSet { local_index: 3 }")
+# LocalSet { local_index: 3 }
+# PopValueInto(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%hi reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~0 ~0
+tp @s ~-1 ~0 ~0
+scoreboard players remove %stackptr wasm 1
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# SetLocalPtr(3)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-4 0 1
+tp @s ~-4 0 1
+# StoreLocal(Work(0))
+execute at @e[tag=localptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=localptr] store result block ~0 ~0 ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+# Comment("LocalGet { local_index: 3 }")
+# LocalGet { local_index: 3 }
+# SetLocalPtr(3)
+execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-4 0 1
+tp @s ~-4 0 1
+# LoadLocal(Work(0))
+execute at @e[tag=localptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+execute at @e[tag=localptr] store result score %work%0%hi reg run data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~1 RecordItem.tag.Memory 1
+# PushValueFrom(Work(0))
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
+scoreboard players get %work%0%lo reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+execute at @e[tag=stackptr] store result block ~0 ~0 ~0 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
+scoreboard players get %work%0%hi reg
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~0 ~0
+tp @s ~1 ~0 ~0
+scoreboard players add %stackptr wasm 1
+# Comment("Return")
+# Return
+# Comment(" Pop frame")
+# Pop frame
+# PopFrame(4)
+execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~-4 ~0 ~0
+tp @s ~-4 ~0 ~0
+execute at @e[tag=frameptr] run fill ~0 ~0 ~0 ~3 ~0 ~1 minecraft:air
+fill ~0 ~0 ~0 ~3 ~0 ~1 minecraft:air
+# Comment(" Save return value")
+# Save return value
+# PopI32Into(Return)
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %return%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# Comment(" Pop return address")
+# Pop return address
+# PopI32Into(Work(0))
+execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~0 ~0
+tp @s ~-2 ~0 ~0
+scoreboard players remove %stackptr wasm 2
+execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+data get block ~0 ~0 ~0 RecordItem.tag.Memory 1
+# DynBranch(Work(0), None)
+function wasm:dyn_branch
+# wasm:__wasm0_0
+execute if score %work%0%lo reg matches 0..0 run setblock 0 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm0_1
+execute if score %work%0%lo reg matches 1..1 run setblock 1 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm0_2
+execute if score %work%0%lo reg matches 2..2 run setblock 2 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_0
+execute if score %work%0%lo reg matches 3..3 run setblock 3 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_1
+execute if score %work%0%lo reg matches 4..4 run setblock 4 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_2
+execute if score %work%0%lo reg matches 5..5 run setblock 5 1 -1 minecraft:redstone_block destroy
+# wasm:__wasm1_3
+execute if score %work%0%lo reg matches 6..6 run setblock 6 1 -1 minecraft:redstone_block destroy
+# wasm:setup
+execute if score %work%0%lo reg matches 7..7 run setblock 7 1 -1 minecraft:redstone_block destroy
+execute unless score %work%0%lo reg matches 0..7 run tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]
+tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]
+
+Attempt to branch to invalid function -1
+
+Executed 71 commands from function 'wasm:__wasm1_1'

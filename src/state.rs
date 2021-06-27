@@ -18,7 +18,7 @@ enum Value {
 }
 
 pub(crate) struct State {
-	pc: (usize, usize),
+	pub pc: (usize, usize),
 
 	bbs: Vec<BasicBlock<Instr>>,
 
@@ -37,7 +37,14 @@ pub(crate) struct State {
     local_ptr: u32,
 
     memory_ptr: u32,
+}
 
+fn set_reg_i32(registers: &mut HashMap<Register, (i32, i32)>, reg: Register, value: i32) {
+    registers.entry(reg).or_insert((0, 0)).0 = value;
+}
+
+fn set_reg_i64(registers: &mut HashMap<Register, (i32, i32)>, reg: Register, value: (i32, i32)) {
+    registers.insert(reg, value);
 }
 
 impl State {
@@ -70,10 +77,14 @@ impl State {
 		}
 	}
 
-	pub fn call(&mut self, idx: usize) {
+    pub fn enter(&mut self, idx: usize) {
         self.stack.push(Value::I32(-1));
 
 		self.pc = (idx, 0);
+    }
+
+	pub fn call(&mut self, idx: usize) {
+        self.enter(idx);
 		loop {
 			if self.step() { break }
 		}
@@ -92,6 +103,10 @@ impl State {
         *self.registers.get(reg).unwrap()
     }
 
+    pub fn is_halted(&self) -> bool {
+        self.pc.1 == self.bbs[self.pc.0].instrs.len()
+    }
+
 	/// Returns true when it ends
 	pub fn step(&mut self) -> bool {
 		use Instr::*;
@@ -99,6 +114,7 @@ impl State {
 		let mut incr_pc = true;
 
 		let bb = &self.bbs[self.pc.0];
+
 		let instr = &bb.instrs[self.pc.1];
 
         println!("{:?}", instr);
@@ -123,15 +139,25 @@ impl State {
             SetLocalPtr(l) => {
                 self.local_ptr = *l;
             }
-            LoadLocal(r) => {
+            LoadLocalI64(r) => {
                 let f = self.frames.last().unwrap();
                 let v = f.data[self.local_ptr as usize];
-                self.registers.insert(*r, v);
+                set_reg_i64(&mut self.registers, *r, v);
             }
-            StoreLocal(r) => {
+            StoreLocalI64(r) => {
                 let f = self.frames.last_mut().unwrap();
                 let v = *self.registers.get(r).unwrap();
                 f.data[self.local_ptr as usize] = v;
+            }
+            LoadLocalI32(r) => {
+                let f = self.frames.last().unwrap();
+                let v = f.data[self.local_ptr as usize];
+                set_reg_i32(&mut self.registers, *r, v.0);
+            }
+            StoreLocalI32(r) => {
+                let f = self.frames.last_mut().unwrap();
+                let v = *self.registers.get(r).unwrap();
+                f.data[self.local_ptr as usize].0 = v.0;
             }
 
             SetMemPtr(r) => {
@@ -151,18 +177,27 @@ impl State {
                 
                 let v = page[self.memory_ptr as usize % 65536..][..4].try_into().unwrap();
                 let v = i32::from_be_bytes(v);
-                self.registers.entry(*r).or_insert((0, 0)).0 = v;
+                set_reg_i32(&mut self.registers, *r, v);
             }
 
             SetGlobalPtr(v) => {
                 self.global_ptr = *v;
             }
-            LoadGlobal(r) => {
-                self.registers.insert(*r, self.globals[self.global_ptr as usize]);
+            LoadGlobalI64(r) => {
+                let v = self.globals[self.global_ptr as usize];
+                set_reg_i64(&mut self.registers, *r, v);
             }
-            StoreGlobal(r) => {
+            StoreGlobalI64(r) => {
                 let v = self.get_reg_any(r);
                 self.globals[self.global_ptr as usize] = v;
+            }
+            LoadGlobalI32(r) => {
+                let v = self.globals[self.global_ptr as usize].0;
+                set_reg_i32(&mut self.registers, *r, v);
+            }
+            StoreGlobalI32(r) => {
+                let v = self.get_reg_any(r).0;
+                self.globals[self.global_ptr as usize].0 = v;
             }
 
             PushValueFrom(r) => {
@@ -262,6 +297,10 @@ impl State {
             }
 
 			Comment(_) => {},
+            Tellraw(t) => {
+                // TODO:
+                println!("{}", t);
+            }
 
 			i => panic!("{:?}", i),
 		}
@@ -270,7 +309,7 @@ impl State {
 			self.pc.1 += 1;
 		}
 
-		false
+        self.is_halted()
 	}
 }
 
