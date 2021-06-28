@@ -1,4 +1,4 @@
-use crate::{Instr, BasicBlock, Label, Register, GlobalList, MemoryList, MemoryType};
+use crate::{Instr, BasicBlock, Label, Register, GlobalList, MemoryList, MemoryType, Axis};
 use std::{collections::HashMap, convert::TryInto};
 
 struct Frame {
@@ -37,6 +37,8 @@ pub(crate) struct State {
     local_ptr: u32,
 
     memory_ptr: u32,
+
+    turtle: (i32, i32, i32),
 }
 
 fn set_reg_i32(registers: &mut HashMap<Register, (i32, i32)>, reg: Register, value: i32) {
@@ -74,6 +76,7 @@ impl State {
             memory_ptr: 0,
             globals: vec![(0, 0); globals.globals.len()],
             memory,
+            turtle: (0, 0, 0),
 		}
 	}
 
@@ -132,8 +135,24 @@ impl State {
 
 				self.stack.push(Value::I32(idx as i32));
 			}
+            PushI64Const(c) => {
+                todo!()
+            }
             PushI32Const(c) => {
                 self.stack.push(Value::I32(*c));
+            }
+
+            SetTurtleCoord(r, axis) => {
+                let v = self.get_reg_any(r).0;
+                match axis {
+                    Axis::X => self.turtle.0 = v,
+                    Axis::Y => self.turtle.1 = v,
+                    Axis::Z => self.turtle.2 = v,
+                }
+            }
+            SetTurtleBlock(r) => {
+                let v = self.get_reg_any(r).0;
+                println!("TODO: Set block {} at {:?}", v, self.turtle);
             }
 
             SetLocalPtr(l) => {
@@ -160,6 +179,13 @@ impl State {
                 f.data[self.local_ptr as usize].0 = v.0;
             }
 
+            I64ExtendI32S { .. } => {
+                todo!()
+            }
+            ResetFrames => {
+                todo!()
+            }
+
             SetMemPtr(r) => {
                 let v = self.get_reg_any(r).0;
                 assert!(v >= 0, "{:?}", v);
@@ -167,18 +193,54 @@ impl State {
             }
             StoreI32(r, _a) => {
                 let v = self.registers.get(r).unwrap().0;
+                // FIXME: LE
                 let v = v.to_be_bytes();
 
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 page[self.memory_ptr as usize % 65536..][..4].copy_from_slice(&v);
             }
+            StoreI32_16(r, _a) => {
+                let v = self.registers.get(r).unwrap().0 as u16;
+                // FIXME: LE
+                let v = v.to_be_bytes();
+
+                let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                page[self.memory_ptr as usize % 65536..][..2].copy_from_slice(&v);
+            }
+            StoreI32_8(r, _a) => {
+                let v = self.registers.get(r).unwrap().0 as u8;
+                // FIXME: LE
+                let v = v.to_be_bytes();
+
+                let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                page[self.memory_ptr as usize % 65536..][..1].copy_from_slice(&v);
+            }
             LoadI32(r, _a) => {
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 
                 let v = page[self.memory_ptr as usize % 65536..][..4].try_into().unwrap();
+                // FIXME: LE
                 let v = i32::from_be_bytes(v);
                 set_reg_i32(&mut self.registers, *r, v);
             }
+            LoadI32_16U(r, _a) => {
+                let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                
+                let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
+                // FIXME: LE
+                let v = u16::from_be_bytes(v) as u32 as i32;
+                set_reg_i32(&mut self.registers, *r, v);
+            }
+            LoadI32_8U(r, _a) => {
+                let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                
+                let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
+                // FIXME: LE
+                let v = u8::from_be_bytes(v) as u32 as i32;
+                set_reg_i32(&mut self.registers, *r, v);
+            }
+
+
 
             SetGlobalPtr(v) => {
                 self.global_ptr = *v;
@@ -222,6 +284,10 @@ impl State {
                 self.registers.insert(*r, v);
             }
 
+            Drop => {
+                let _ = pop_any_into(&mut self.stack);
+            }
+
 			Branch(l) => {
                 self.pc = (self.get_pc(l), 0);
 				incr_pc = false;
@@ -235,6 +301,20 @@ impl State {
                 };
 
                 self.pc = (self.get_pc(target), 0);
+                incr_pc = false;
+            }
+            BranchTable { reg, targets, default } => {
+                let dest: usize = self.get_reg_any(reg).0.try_into().unwrap();
+
+                let dest = if let Some(target) = targets.get(dest) {
+                    target
+                } else if let Some(default) = default {
+                    default
+                } else {
+                    panic!("Branch out of bounds and no default target: {}", dest);
+                };
+
+                self.pc = (self.get_pc(dest), 0);
                 incr_pc = false;
             }
 
@@ -251,6 +331,9 @@ impl State {
                     "|=" => l | r,
                     "^=" => l ^ r,
                     "shl" => l << r,
+                    "shru" => ((l as u32) >> r) as i32,
+                    "==" => (l == r) as i32,
+                    "!=" => (l != r) as i32,
                     "lts" => (l <  r) as i32,
                     "les" => (l <= r) as i32,
                     "gts" => (l >  r) as i32,
@@ -305,8 +388,6 @@ impl State {
                 // TODO:
                 println!("{}", t);
             }
-
-			i => panic!("{:?}", i),
 		}
 
 		if incr_pc {

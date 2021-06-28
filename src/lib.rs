@@ -63,16 +63,16 @@ const USE_GRID_CALL: bool = true;
 
 use std::collections::HashMap;
 
-fn find_target(operators: &[Operator], br_idx: usize, mut relative_depth: u32) -> usize {
+fn find_target(operators: &[Operator], br_idx: usize, relative_depth: u32) -> usize {
     let mut labels = vec![None];
 
-    let mut checking = false;
+    let mut abs_depth = None;
 
     let mut result = None;
 
     for (idx, op) in operators.iter().enumerate() {
         if br_idx == idx {
-            checking = true;
+            abs_depth = Some(labels.len() - relative_depth as usize);
         }
 
         match op {
@@ -90,15 +90,12 @@ fn find_target(operators: &[Operator], br_idx: usize, mut relative_depth: u32) -
                     top = Some(idx);
                 }
 
-                if checking {
-                    if relative_depth == 0 {
-                        if result.is_none() {
-                            result = top;
-                        }
-                    } else {
-                        relative_depth -= 1;
+                if let Some(abs_depth) = abs_depth {
+                    if labels.len() + 1 == abs_depth && result.is_none() {
+                        result = top;
                     }
                 }
+
             }
             _ => {}
         }
@@ -111,7 +108,7 @@ fn find_target(operators: &[Operator], br_idx: usize, mut relative_depth: u32) -
 
 struct SplitBBInfo {
     bb_count: usize,
-    branches: HashMap<usize, (Label, Option<Label>)>
+    branches: HashMap<usize, (Vec<Label>, Option<Label>)>
 }
 
 fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
@@ -123,7 +120,7 @@ fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
     for (bbs, op) in op_bbs.iter_mut().zip(operators.iter()) {
         match op {
             // TODO: More
-            Operator::Br { .. } | Operator::BrIf { .. } |
+            Operator::Br { .. } | Operator::BrIf { .. } | Operator::BrTable { .. } |
             Operator::Call { .. } | Operator::CallIndirect { .. } |
             Operator::Return => {
                 *bbs = bbs_id;
@@ -148,14 +145,32 @@ fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
             Operator::Br { relative_depth } => {
                 let target = find_target(&operators, idx, *relative_depth);
                 let target = op_bbs[target];
-                branches.insert(idx, (Label::new(func_idx, target), None));
+                branches.insert(idx, (vec![Label::new(func_idx, target)], None));
             }
             Operator::BrIf { relative_depth } => {
                 let t_target = find_target(&operators, idx, *relative_depth);
                 let t_target = op_bbs[t_target];
                 let f_target = op_bbs[idx + 1];
 
-                branches.insert(idx, (Label::new(func_idx, t_target), Some(Label::new(func_idx, f_target))));
+                branches.insert(idx, (vec![Label::new(func_idx, t_target), Label::new(func_idx, f_target)], None));
+            }
+            Operator::BrTable { table } => {
+                let mut default = None;
+                let mut targets = Vec::new();
+                for target in table.targets() {
+                    let (depth, def) = target.unwrap();
+                    let target = find_target(&operators, idx, depth);
+                    let target = op_bbs[target];
+                    let target = Label::new(func_idx, target);
+
+                    if def {
+                        default = Some(target);
+                    } else {
+                        targets.push(target);
+                    }
+                }
+
+                branches.insert(idx, (targets, default));
             }
             _ => {}
         }
@@ -167,10 +182,20 @@ fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Axis {
+    X,
+    Y,
+    Z,
+}
+
 #[derive(Debug, Clone)]
 enum Instr {
     Comment(String),
     Tellraw(String),
+
+    SetTurtleCoord(Register, Axis),
+    SetTurtleBlock(Register),
 
     PushValueFrom(Register),
     PushI32From(Register),
@@ -183,6 +208,7 @@ enum Instr {
     // (None represents the wasmcraft-specific table)
     DynBranch(Register, Option<u32>),
     BranchIf { t_name: Label, f_name: Label, cond: Register },
+    BranchTable { reg: Register, targets: Vec<Label>, default: Option<Label> },
 
     I32Op { dst: Register, lhs: Register, op: &'static str, rhs: Register },
 
@@ -202,9 +228,13 @@ enum Instr {
     /// reg, align
     /// reg = *memptr
     LoadI32(Register, u8),
+    LoadI32_8U(Register, u8),
+    LoadI32_16U(Register, u8),
     /// reg, align
     /// *memptr = reg
     StoreI32(Register, u8),
+    StoreI32_8(Register, u8),
+    StoreI32_16(Register, u8),
 
     AddI32Const(Register, i32),
     I64ExtendI32S { dst: Register, src: Register },
@@ -317,6 +347,35 @@ impl Instr {
 
                 tmp
             }
+            "/=u" => {
+                // FIXME:
+
+                let tmp = Register::Work(2);
+
+                assert_ne!(lhs, tmp);
+                assert_ne!(rhs, tmp);
+
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg /= {} reg", lhs.get_lo(), rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
+
+                tmp
+            }
+            "remu" => {
+                // FIXME: 
+                let tmp = Register::Work(2);
+
+                assert_ne!(lhs, tmp);
+                assert_ne!(rhs, tmp);
+
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs.get_lo(), rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
+
+                tmp
+            }
             "&=" => {
                 body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
                 body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
@@ -345,18 +404,34 @@ impl Instr {
                 body.push(format!("scoreboard players operation {} reg = %param0%0 reg", lhs.get_lo()));
                 lhs
             }
-            "gts" | "ges" | "les" | "lts" => {
+            "shru" => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push("function intrinsic:lshr".to_string());
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", lhs.get_lo()));
+                lhs
+            }
+            "gts" | "ges" | "les" | "lts" | "==" => {
                 let score_op = match op {
                     "gts" => ">",
                     "ges" => ">=",
                     "les" => "<=",
                     "lts" => "<",
+                    "==" => "=",
+                    "!=" => "<>",
                     _ => unreachable!(),
                 };
 
                 let condreg = Register::Work(2);
 
                 body.push(format!("execute store success score {} reg if score {} reg {} {} reg", condreg.get_lo(), lhs.get_lo(), score_op, rhs.get_lo()));
+
+                condreg
+            }
+            "!=" => {
+                let condreg = Register::Work(2);
+
+                body.push(format!("execute store success score {} reg unless score {} reg = {} reg", condreg.get_lo(), lhs.get_lo(), rhs.get_lo()));
 
                 condreg
             }
@@ -374,10 +449,10 @@ impl Instr {
                 let c = condreg.get_lo();
 
                 body.push(format!("scoreboard players set {} reg 0", c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} 1", l, c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} 0", r, c));
-                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} 1", l, r, l, score_op, r, c));
-                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} 1", l, r, l, score_op, r, c));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 1", l, c));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 0", r, c));
+                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
+                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
                
                 condreg
             }
@@ -395,10 +470,10 @@ impl Instr {
                 let c = condreg.get_lo();
 
                 body.push(format!("scoreboard players set {} reg 0", c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} 0", l, c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} 1", r, c));
-                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} 1", l, r, l, score_op, r, c));
-                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} 1", l, r, l, score_op, r, c));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 0", l, c));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 1", r, c));
+                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
+                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
                
                 condreg
             }
@@ -438,6 +513,34 @@ impl Instr {
             }
             Tellraw(s) => {
                 body.push(format!("tellraw @a {}", s));
+            }
+
+            SetTurtleCoord(reg, axis) => {
+                body.push(format!("execute as @e[tag=turtle] store result entity @s Pos[{}] double 1 run scoreboard players get {} reg", *axis as u32, reg.get_lo()));
+            }
+            SetTurtleBlock(reg) => {
+                let blocks = [
+                    "minecraft:air",
+                    "minecraft:cobblestone",
+                    "minecraft:granite",
+                    "minecraft:andesite",
+                    "minecraft:diorite",
+                    "minecraft:lapis_block",
+                    "minecraft:iron_block",
+                    "minecraft:gold_block",
+                    "minecraft:diamond_block",
+                    "minecraft:redstone_block",
+                ];
+
+                for (idx, block) in blocks.iter().enumerate() {
+                    body.push(format!("execute at @e[tag=turtle] if score {} reg matches {}..{} run setblock ~ ~ ~ {} destroy\n", reg.get_lo(), idx, idx, block));
+                }
+
+                let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), blocks.len() - 1);
+                s.push_str(r#"tellraw @a [{"text":"Attempt to set invalid block"},{"score":{"name":""#);
+                s.push_str(&reg.get_lo());
+                s.push_str(r#"","objective":"reg"}}]"#);
+                body.push(s);
             }
 
             SetMemPtr(reg) => {
@@ -553,6 +656,22 @@ impl Instr {
                 body.push(format!("execute unless score {} reg matches 0..0 run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", cond.get_lo(), t_name));
                 body.push(format!("execute if score {} reg matches 0..0 run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", cond.get_lo(), f_name));
             }
+            BranchTable { reg, targets, default } => {
+                for (idx, target) in targets.iter().enumerate() {
+                    let target = get_block(target);
+                    // FIXME: Reg0
+                    body.push(format!("execute if score {} reg matches {}..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy\n", reg.get_lo(), idx, idx, target));
+                }
+
+                if let Some(default) = default {
+                    let default = get_block(default);
+                    body.push(format!("execute unless score {} reg matches 0..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", reg.get_lo(), targets.len() - 1, default));
+                } else {
+                    let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1);
+                    s.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
+                    body.push(s);
+                }
+            }
 
             LoadGlobalI64(reg) => {
                 body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
@@ -573,17 +692,29 @@ impl Instr {
                 body.push("function intrinsic:load_word".to_string());
                 body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
             }
+            LoadI32_8U(dst, _align) => {
+                body.push("function intrinsic:load_byte".to_string());
+                // TODO: Determine if load_byte actually returns a byte
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+            }
+            LoadI32_16U(dst, _align) => {
+                // TODO:
+                body.push("function intrinsic:load_halfword_unaligned".to_string());
+                // TODO: Determine if load_halfword actually returns a halfword
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+            }
             &StoreI32(src, _align) => {
-                /*
-                if align % 4 == 0 {
-                    body.push(format!("execute at @e[tag=memoryptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", src.get_lo()));
-                } else {
-                    body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
-                    body.push("function intrinsic:store_word_unaligned".to_string());
-                }
-                */
                 body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
                 body.push("function intrinsic:store_word".to_string());
+            }
+            &StoreI32_8(src, _align) => {
+                body.push(format!("scoreboard players operation %param2%0 reg = {} reg", src.get_lo()));
+                body.push("function intrinsic:store_byte".to_string());
+            }
+            &StoreI32_16(src, _align) => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
+                // TODO:
+                body.push("function intrinsic:store_halfword_unaligned".to_string());
             }
 
             ResetFrames => {
@@ -707,11 +838,11 @@ impl FuncBodyStream {
     pub fn get_i32_dst(&mut self, lhs: Register, op: &str, rhs: Register) -> Register {
         match op {
             "+=" | "-=" | "*=" | "%=" |
-            "&=" | "|=" | "^=" | "shl" => {
+            "&=" | "|=" | "^=" | "shl" | "shru" => {
                 lhs
             }
-            "gts" | "ges" | "les" | "lts" |
-            "geu" | "gtu" | "leu" | "ltu" | "/=" => {
+            "gts" | "ges" | "les" | "lts" | "==" | "!=" |
+            "geu" | "gtu" | "leu" | "ltu" | "/=" | "/=u" | "remu" => {
                 Register::Work(2)
             }
             _ => {
@@ -777,6 +908,31 @@ impl FuncBodyStream {
         self.push_instr(Instr::StoreI32(dreg, memarg.align));
     }
 
+    pub fn store_i32_8(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        let dreg = Register::Work(1);
+        let areg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(dreg));
+        self.push_instr(Instr::PopI32Into(areg));
+        self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(areg));
+
+        self.push_instr(Instr::StoreI32_8(dreg, memarg.align));
+    }
+
+    pub fn store_i32_16(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        let dreg = Register::Work(1);
+        let areg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(dreg));
+        self.push_instr(Instr::PopI32Into(areg));
+        self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(areg));
+
+        self.push_instr(Instr::StoreI32_16(dreg, memarg.align));
+    }
+
+
     pub fn load_i32(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
         let reg = Register::Work(0);
 
@@ -787,6 +943,29 @@ impl FuncBodyStream {
         self.push_instr(Instr::LoadI32(reg, memarg.align));
         self.push_instr(Instr::PushI32From(reg));
     }
+
+    pub fn load_i32_8u(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        let reg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(reg));
+        self.push_instr(Instr::AddI32Const(reg, memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(reg));
+
+        self.push_instr(Instr::LoadI32_8U(reg, memarg.align));
+        self.push_instr(Instr::PushI32From(reg));
+    }
+
+    pub fn load_i32_16u(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        let reg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(reg));
+        self.push_instr(Instr::AddI32Const(reg, memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(reg));
+
+        self.push_instr(Instr::LoadI32_16U(reg, memarg.align));
+        self.push_instr(Instr::PushI32From(reg));
+    }
+
 
     pub fn local_set(&mut self, local_index: u32, locals: &[(u32, Type)]) {
         let reg = Register::Work(0);
@@ -856,7 +1035,7 @@ impl FuncBodyStream {
     }
 
 
-    pub fn visit_operator(&mut self, o: Operator, local_count: u32, func_idx: CodeFuncIdx, types: &TypeList, function_list: &FunctionList, memory_list: &MemoryList, global_list: &GlobalList, branches: Option<&(Label, Option<Label>)>, locals: &[(u32, Type)]) {
+    pub fn visit_operator(&mut self, o: Operator, local_count: u32, func_idx: CodeFuncIdx, types: &TypeList, function_list: &FunctionList, memory_list: &MemoryList, global_list: &GlobalList, branches: Option<&(Vec<Label>, Option<Label>)>, locals: &[(u32, Type)]) {
         if self.basic_blocks.is_empty() {
             self.basic_blocks.push(BasicBlock::new(func_idx, 0));
         }
@@ -1005,8 +1184,20 @@ impl FuncBodyStream {
             I32Store { memarg } => {
                 self.store_i32(memarg, memory_list);
             }
+            I32Store8 { memarg } => {
+                self.store_i32_8(memarg, memory_list);
+            }
+            I32Store16 { memarg } => {
+                self.store_i32_16(memarg, memory_list);
+            }
             I32Load { memarg } => {
                 self.load_i32(memarg, memory_list);
+            }
+            I32Load8U { memarg } => {
+                self.load_i32_8u(memarg, memory_list);
+            }
+            I32Load16U { memarg } => {
+                self.load_i32_16u(memarg, memory_list);
             }
             I64Store { memarg } => {
                 let mut hi_memarg = memarg;
@@ -1048,6 +1239,12 @@ impl FuncBodyStream {
             I32DivS => {
                 self.make_i32_binop("/=");
             }
+            I32DivU => {
+                self.make_i32_binop("/=u");
+            }
+            I32RemU => {
+                self.make_i32_binop("remu");
+            }
             I32And => {
                 self.make_i32_binop("&=");
             }
@@ -1059,6 +1256,15 @@ impl FuncBodyStream {
             }
             I32Shl => {
                 self.make_i32_binop("shl");
+            }
+            I32Eq => {
+                self.make_i32_binop("==");
+            }
+            I32Ne => {
+                self.make_i32_binop("!=");
+            }
+            I32ShrU => {
+                self.make_i32_binop("shru");
             }
 
             LocalTee { local_index } => {
@@ -1141,6 +1347,8 @@ impl FuncBodyStream {
             Br { .. } => {
                 let (target, o) = branches.unwrap();
                 assert!(o.is_none());
+                assert_eq!(target.len(), 1);
+                let target = &target[0];
 
                 self.push_instr(Instr::Branch(Label::new(func_idx, target.idx)));
 
@@ -1151,13 +1359,35 @@ impl FuncBodyStream {
 
                 self.push_instr(Instr::PopI32Into(reg));
 
-                let (t_target, f_target) = branches.unwrap();
-                let f_target = f_target.as_ref().unwrap();
+                let (targets, d) = branches.unwrap();
+                assert!(d.is_none());
+                assert_eq!(targets.len(), 2);
+
+                let t_target = &targets[0];
+                let f_target = &targets[1];
 
                 let t_name = Label::new(func_idx, t_target.idx);
                 let f_name = Label::new(func_idx, f_target.idx);
 
                 self.push_instr(Instr::BranchIf { t_name, f_name, cond: reg });
+
+                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+            }
+            BrTable { .. } => {
+                let reg = Register::Work(0);
+
+                self.push_instr(Instr::PopI32Into(reg));
+
+                let (mut targets, mut default) = branches.unwrap().clone();
+
+                for t in targets.iter_mut() {
+                    t.func_idx = func_idx;
+                }
+                if let Some(d) = &mut default {
+                    d.func_idx = func_idx;
+                }
+
+                self.push_instr(Instr::BranchTable { reg, targets, default });
 
                 self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
             }
@@ -1473,7 +1703,7 @@ pub fn run() {
 
     let (basic_blocks, wasm_file) = compile(&file);
 
-    let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, false);
+    let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, true);
 
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
@@ -1481,20 +1711,9 @@ pub fn run() {
 
     save_datapack(mc_functions.clone(), &wasm_file);
 
-    let ir_result = run_ir(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+    let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
-    let cmd_result = run_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
-
-    let holder = Register::Return.get_lo();
-    let obj = "reg".to_string();
-
-    let ir_val = ir_result.registers.get(&Register::Return).unwrap().0;
-    let cmd_val = cmd_result.scoreboard.get(&datapack_vm::cir::ScoreHolder::new(holder).unwrap(), &obj).unwrap();
-
-    assert_eq!(ir_val, cmd_val);
-
-    println!("Returned with {:?}", ir_val);
-
+    println!("Returned with {:?}", result);
 }
 
 fn run_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
@@ -1652,17 +1871,56 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
         }
     }
 
-    // Add stub imported functions
-    // TODO: Figure out how to do this
+
+    let mut basic_blocks = Vec::new();
 
     let mut functions = FunctionList::new(); 
 
-    for f in imports.imports.iter() {
+    for (i, f) in imports.imports.iter().enumerate() {
         if let ImportSectionEntryType::Function(func) = f.ty {
             functions.add_function(func)
         }
-    }
 
+        let mut set_turtle_coord = |axis| {
+            let mut bb = BasicBlock::new(CodeFuncIdx(i as u32), 0);
+
+            let ret_reg = Register::Work(0);
+            bb.instrs = vec![
+                Instr::SetTurtleCoord(Register::Param(0), axis),
+                // TODO: Dedup
+                Instr::Comment(" Pop return address".to_string()),
+                Instr::PopI32Into(ret_reg),
+                Instr::DynBranch(ret_reg, None),
+            ];
+            basic_blocks.push(bb);
+        };
+
+        if f.module == "env" {
+            match f.field {
+                Some("turtle_x") => set_turtle_coord(Axis::X),
+                Some("turtle_y") => set_turtle_coord(Axis::Y),
+                Some("turtle_z") => set_turtle_coord(Axis::Z),
+                Some("turtle_set") => {
+                    // TODO: Verify parameter types
+
+                    let mut bb = BasicBlock::new(CodeFuncIdx(i as u32), 0);
+
+                    let ret_reg = Register::Work(0);
+                    bb.instrs = vec![
+                        Instr::SetTurtleBlock(Register::Param(0)),
+                        // TODO: Dedup
+                        Instr::Comment(" Pop return address".to_string()),
+                        Instr::PopI32Into(ret_reg),
+                        Instr::DynBranch(ret_reg, None),
+                    ];
+                    basic_blocks.push(bb);
+                }
+                field => todo!("{:?}", field),
+            }
+        } else {
+            todo!("{:?}", f)
+        }
+    }
 
     let func_reader = func_reader.unwrap();
     for func in func_reader {
@@ -1672,13 +1930,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     }
 
 
-    let mut basic_blocks = Vec::new();
 
-    for i in 0..imports.num_funcs() {
-        let mut bb = BasicBlock::new(CodeFuncIdx(i as u32), 0);
-        bb.instrs.push(Instr::Unreachable);
-        basic_blocks.push(bb);
-    }
 
 
     let mut func_idx = CodeFuncIdx(imports.num_funcs() as u32);
@@ -1841,6 +2093,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
     kill @e[tag=frameptr]\n\
     kill @e[tag=stackptr]\n\
     kill @e[tag=globalptr]\n\
+    kill @e[tag=turtle]\n\
     \n\
     # Add armor stand pointers\n\
     summon minecraft:armor_stand 0 0 8 {Marker:1b,Tags:[\"memoryptr\"],CustomName:'\"memoryptr\"',CustomNameVisible:1b}\n\
@@ -1848,6 +2101,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
+    summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
     
     scoreboard players set %stackptr wasm 0
     scoreboard players set %frameptr wasm 0
@@ -1977,7 +2231,14 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
                 "BLOCKPOS" => {
                     let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
                         n == fixup_value
-                    }).unwrap().0;
+                    }).unwrap_or_else(|| {
+                        eprintln!("Failed to find {:?}", fixup_value);
+                        eprintln!("Functions are:");
+                        for (n, _) in mc_functions.iter() {
+                            eprintln!("{:?}", n);
+                        }
+                        panic!();
+                    }).0;
 
                     // FIXME:
                     let pos = format!("{} 1 -1", idx);
@@ -1992,12 +2253,86 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
     }
 }
 
+use datapack_vm::interpreter::InterpError;
+
+fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> i32 {
+    let mut mir = setup_state(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+
+    let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+
+    loop {
+        println!("Stepping MIR, pc is {:?}", mir.pc);
+
+        let mir_halted = mir.step();
+
+        match cmd.run_to_end() {
+            Err(InterpError::BreakpointHit) => {
+                let top_func = cmd.get_top_func();
+                compare_states(&mir, &cmd);
+                cmd.finish_unwind(top_func);
+
+                if cmd.halted() {
+                    assert!(mir_halted);
+                    break;
+                }
+            }
+            Ok(()) => {
+
+                assert!(mir_halted);
+                break;
+            }
+            Err(e) => todo!("{:?}", e)
+        }
+
+        assert!(!mir_halted);
+
+        println!();
+
+    }
+
+    compare_states(&mir, &cmd);
+
+    mir.registers.get(&Register::Return).unwrap().0
+}
+
+fn compare_states(mir: &State, cmd: &Interpreter) {
+    let mut diffs = Vec::new();
+
+    for (name, value) in cmd.scoreboard.0.get("reg").unwrap().iter() {
+        if let Ok((reg, is_hi)) = Register::parse(name.as_ref()) {
+            let pair = mir.registers.get(&reg).unwrap();
+
+            if is_hi {
+                if pair.1 != *value {
+                    diffs.push((reg, true, pair.1, *value))
+                }
+                //assert_eq!(pair.1, *value);
+            } else {
+                if pair.0 != *value {
+                    diffs.push((reg, false, pair.0, *value))
+                }
+                //assert_eq!(pair.0, *value);
+            }
+        }
+    }
+
+    for (name, is_hi, mir, cmd) in diffs.iter() {
+        if *is_hi {
+            println!("{} : {} (mir) vs {} (cmd)", name.get_hi(), mir, cmd);
+        } else {
+            println!("{} : {} (mir) vs {} (cmd)", name.get_lo(), mir, cmd);
+        }
+    }
+
+    assert!(diffs.is_empty());
+}
+
+
 #[cfg(test)]
 mod test {
     use super::*;
     use wasmparser::ResizableLimits;
     use std::path::Path;
-    use datapack_vm::interpreter::InterpError;
 
     fn test_whole_program(path: &Path, expected: i32) {
         let file = std::fs::read(path).unwrap();
@@ -2010,43 +2345,9 @@ mod test {
             println!("F: {:?}", func.0)
         }
 
-        let mut mir = setup_state(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+        let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
-        let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
-
-        loop {
-            println!("Stepping MIR, pc is {:?}", mir.pc);
-
-            let mir_halted = mir.step();
-
-            match cmd.run_to_end() {
-                Err(InterpError::BreakpointHit) => {
-                    let top_func = cmd.get_top_func();
-                    compare_states(&mir, &cmd);
-                    cmd.finish_unwind(top_func);
-
-                    if cmd.halted() {
-                        assert!(mir_halted);
-                        break;
-                    }
-                }
-                Ok(()) => {
-
-                    assert!(mir_halted);
-                    break;
-                }
-                Err(e) => todo!("{:?}", e)
-            }
-
-            assert!(!mir_halted);
-
-            println!();
-
-        }
-
-        compare_states(&mir, &cmd);
-
-        assert_eq!(mir.registers.get(&Register::Return).unwrap().0, expected);
+        assert_eq!(result, expected);
     }
 
     fn test_mir(program: Vec<Instr>, expected: i32) {
@@ -2113,36 +2414,16 @@ mod test {
         //assert_eq!(ir_result, expected);
     }
 
-    fn compare_states(mir: &State, cmd: &Interpreter) {
-        let mut diffs = Vec::new();
 
-        for (name, value) in cmd.scoreboard.0.get("reg").unwrap().iter() {
-            if let Ok((reg, is_hi)) = Register::parse(name.as_ref()) {
-                let pair = mir.registers.get(&reg).unwrap();
+    #[test]
+    #[ignore]
+    fn chip8test() {
+        test_whole_program(Path::new("../CHIP-8-Emulator/chip8.wasm"), 0);
+    }
 
-                if is_hi {
-                    if pair.1 != *value {
-                        diffs.push((reg, true, pair.1, *value))
-                    }
-                    //assert_eq!(pair.1, *value);
-                } else {
-                    if pair.0 != *value {
-                        diffs.push((reg, false, pair.0, *value))
-                    }
-                    //assert_eq!(pair.0, *value);
-                }
-            }
-        }
-
-        for (name, is_hi, mir, cmd) in diffs.iter() {
-            if *is_hi {
-                println!("{} : {} (mir) vs {} (cmd)", name.get_hi(), mir, cmd);
-            } else {
-                println!("{} : {} (mir) vs {} (cmd)", name.get_lo(), mir, cmd);
-            }
-        }
-
-        assert!(diffs.is_empty());
+    #[test]
+    fn nested_loop() {
+        test_whole_program(Path::new("../nested_loop.wasm"), 18);
     }
 
     #[test]

@@ -3,9 +3,9 @@
 # Return value is %return%0
 
 function intrinsic:load_byte
-scoreboard players operation %return%0 rust = %param0%0 rust
-scoreboard players add %ptr rust 1
+scoreboard players operation %return%0 reg = %param0%0 reg
+scoreboard players add %ptr reg 1
 
 function intrinsic:load_byte
-scoreboard players operation %param0%0 rust *= %%256 rust
-scoreboard players operation %return%0 rust += %param0%0 rust
+scoreboard players operation %param0%0 reg *= %%256 reg
+scoreboard players operation %return%0 reg += %param0%0 reg
