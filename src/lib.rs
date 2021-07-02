@@ -3,10 +3,11 @@ mod state;
 
 use datapack_vm::cir::{Function, FunctionId};
 use datapack_vm::interpreter::Interpreter;
+use std::convert::TryInto;
 
 use state::State;
 
-use wasmparser::{Export, ExternalKind, FuncType, Global, Import, ImportSectionEntryType, MemoryImmediate, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
+use wasmparser::{Data, DataKind, Export, ExternalKind, FuncType, Global, Import, ImportSectionEntryType, MemoryImmediate, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
 
 /// Represents wasm's "Function Index Space"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +200,7 @@ enum Instr {
 
     PushValueFrom(Register),
     PushI32From(Register),
+    PushI64FromSplit { lo: Register, hi: Register },
     PushI32Const(i32),
     PushI64Const(i64),
     PushReturnAddress(Label),
@@ -214,6 +216,7 @@ enum Instr {
 
     PopValueInto(Register),
     PopI32Into(Register),
+    PopI64IntoSplit { hi: Register, lo: Register },
 
     LoadGlobalI32(Register),
     StoreGlobalI32(Register),
@@ -236,6 +239,9 @@ enum Instr {
     StoreI32_8(Register, u8),
     StoreI32_16(Register, u8),
 
+    /// Stores 8 consecutive words
+    StoreRow(Register),
+
     AddI32Const(Register, i32),
     I64ExtendI32S { dst: Register, src: Register },
 
@@ -250,6 +256,7 @@ enum Instr {
     PopFrame(u32),
 
     Drop,
+    Select { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
 }
@@ -376,6 +383,21 @@ impl Instr {
 
                 tmp
             }
+            "rems" => {
+                // FIXME: 
+                let tmp = Register::Work(2);
+
+                assert_ne!(lhs, tmp);
+                assert_ne!(rhs, tmp);
+
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs.get_lo(), rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
+
+                tmp
+            }
+
             "&=" => {
                 body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
                 body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
@@ -556,6 +578,13 @@ impl Instr {
                 self.decr_stack_ptr(body);
                 body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
             }
+            PopI64IntoSplit { hi, lo } => {
+                self.decr_stack_ptr_half(body);
+                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", hi.get_lo()));
+
+                self.decr_stack_ptr_half(body);
+                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", lo.get_lo()));
+            }
             &PopValueInto(reg) => {
                 self.decr_stack_ptr_half(body);
                 body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_hi()));
@@ -612,6 +641,13 @@ impl Instr {
             PushI32From(reg) => {
                 body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
                 self.incr_stack_ptr(body);
+            }
+            PushI64FromSplit { lo, hi } => {
+                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", lo.get_lo()));
+                self.incr_stack_ptr_half(body);
+
+                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", hi.get_lo()));
+                self.incr_stack_ptr_half(body);
             }
             &PushValueFrom(reg) => {
                 body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
@@ -717,6 +753,12 @@ impl Instr {
                 body.push("function intrinsic:store_halfword_unaligned".to_string());
             }
 
+            StoreRow(src) => {
+                for i in 0..8 {
+                    body.push(format!("execute at @e[tag=memoryptr] store result block ~ ~ ~{} RecordItem.tag.Memory int 1 run scoreboard players get {} reg", i, src.get_lo()))
+                }
+            }
+
             ResetFrames => {
                 body.push("execute as @e[tag=frameptr] run tp @s 0 0 1".to_string());
                 body.push("scoreboard players set %frameptr wasm 0".to_string());
@@ -724,7 +766,7 @@ impl Instr {
             &PushFrame(local_count) => {
                 if local_count != 0 {
                     body.push(format!("# Push frame with {} locals", local_count));
-                    body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:55}}}}}}", local_count - 1));
+                    body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}}", local_count - 1));
                     body.push(format!("execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~{} ~ ~", local_count));
                 }
             }
@@ -737,6 +779,16 @@ impl Instr {
 
             Drop => {
                 self.decr_stack_ptr(body);
+            }
+            Select { dst_reg, true_reg, false_reg, cond_reg } => {
+                assert_ne!(dst_reg, false_reg);
+                assert_ne!(dst_reg, cond_reg);
+
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
+
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_lo(), false_reg.get_lo()));
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
             }
 
             Unreachable => {
@@ -842,7 +894,7 @@ impl FuncBodyStream {
                 lhs
             }
             "gts" | "ges" | "les" | "lts" | "==" | "!=" |
-            "geu" | "gtu" | "leu" | "ltu" | "/=" | "/=u" | "remu" => {
+            "geu" | "gtu" | "leu" | "ltu" | "/=" | "/=u" | "remu" | "rems" => {
                 Register::Work(2)
             }
             _ => {
@@ -1200,18 +1252,36 @@ impl FuncBodyStream {
                 self.load_i32_16u(memarg, memory_list);
             }
             I64Store { memarg } => {
-                let mut hi_memarg = memarg;
-                hi_memarg.offset += 4;
+                let dreg_hi = Register::Work(2);
+                let dreg_lo = Register::Work(1);
+                let areg = Register::Work(0);
 
-                self.store_i32(hi_memarg, memory_list);
-                self.store_i32(memarg, memory_list);
+                self.push_instr(Instr::PopI64IntoSplit { hi: dreg_hi, lo: dreg_lo });
+
+                self.push_instr(Instr::PopI32Into(areg));
+                self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::StoreI32(dreg_lo, memarg.align));
+                self.push_instr(Instr::AddI32Const(areg, 4));
+                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::StoreI32(dreg_hi, memarg.align));
             }
             I64Load { memarg } => {
-                let mut hi_memarg = memarg;
-                hi_memarg.offset += 4;
+                let areg = Register::Work(0);
+                
+                let dreg_lo = Register::Work(1);
+                let dreg_hi = Register::Work(2);
 
-                self.load_i32(memarg, memory_list);
-                self.load_i32(hi_memarg, memory_list);
+                self.push_instr(Instr::PopI32Into(areg));
+
+                self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::LoadI32(dreg_lo, memarg.align));
+                self.push_instr(Instr::AddI32Const(areg, 4));
+                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::LoadI32(dreg_hi, memarg.align));
+
+                self.push_instr(Instr::PushI64FromSplit { lo: dreg_lo, hi: dreg_hi });
             }
 
             End => {
@@ -1241,6 +1311,9 @@ impl FuncBodyStream {
             }
             I32DivU => {
                 self.make_i32_binop("/=u");
+            }
+            I32RemS => {
+                self.make_i32_binop("rems");
             }
             I32RemU => {
                 self.make_i32_binop("remu");
@@ -1279,6 +1352,20 @@ impl FuncBodyStream {
             }
             Drop => {
                 self.push_instr(Instr::Drop);
+            }
+            Select => {
+                let cond_reg = Register::Work(2);
+                self.push_instr(Instr::PopI32Into(cond_reg));
+
+                let false_reg = Register::Work(1);
+                self.push_instr(Instr::PopValueInto(false_reg));
+
+                let true_reg = Register::Work(0);
+                self.push_instr(Instr::PopValueInto(true_reg));
+
+                self.push_instr(Instr::Select { dst_reg: true_reg, true_reg, false_reg, cond_reg });
+
+                self.push_instr(Instr::PushValueFrom(true_reg));
             }
             Block { ty } => {
                 if ty != TypeOrFuncType::Type(Type::EmptyBlockType) {
@@ -1515,7 +1602,7 @@ impl MemoryList {
                         // Also note that a single fill command can only fill 32768 blocks,
                         // so we'll just do it one at a time for safety
                         cmds.push(format!("fill {} 0 8 {} 255 15 minecraft:air replace", x_offset, x_offset + 8));
-                        cmds.push(format!("fill {} 0 8 {} 255 15 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:55}}}}}} replace", x_offset, x_offset + 8));
+                        cmds.push(format!("fill {} 0 8 {} 255 15 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}} replace", x_offset, x_offset + 8));
                         x_offset += 8;
                     }
 
@@ -1565,7 +1652,7 @@ impl<'a> GlobalList<'a> {
         let mut cmds = Vec::new();
 
         cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:air replace", self.globals.len()));
-        cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:55}}}}}} replace", self.globals.len()));
+        cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}} replace", self.globals.len()));
 
         for (i, global) in self.globals.iter().enumerate() {
             let op = global.init_expr.get_operators_reader()
@@ -1694,16 +1781,17 @@ struct WasmFile<'a> {
     memory: MemoryList,
     exports: ExportList<'a>,
     imports: ImportList<'a>,
+    data: DataList<'a>,
     tables: TableList,
     functions: FunctionList,
 }
 
 pub fn run() {
-    let file = std::fs::read("../example.wasm").unwrap();
+    let file = std::fs::read("../CHIP-8-Emulator/build/chip8.wasm").unwrap();
 
     let (basic_blocks, wasm_file) = compile(&file);
 
-    let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, true);
+    let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data, true);
 
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
@@ -1801,6 +1889,79 @@ fn setup_commands(mc_functions: &[(String, String)], globals: &GlobalList, memor
     i
 }
 
+struct DataList<'a> {
+    data: Vec<Data<'a>>,
+}
+
+impl<'a> DataList<'a> {
+    pub fn new() -> Self {
+        DataList { data: Vec::new() }
+    }
+
+    pub fn add_data(&mut self, d: Data<'a>) {
+        self.data.push(d);
+    }
+
+    fn set_word(&self, mut ptr: usize, value: i32) -> String {
+        assert_eq!(ptr % 4, 0);
+        ptr /= 4;
+
+        let z = (ptr % 8) + 8;
+        ptr /= 8;
+        let y = ptr % 256;
+        ptr /= 256;
+        let x = ptr;
+
+        format!("data modify block {} {} {} RecordItem.tag.Memory set value {}", x, y, z, value)
+    }
+
+    pub fn init(&self) -> Vec<String> {
+        let mut cmds = Vec::new();
+
+        for d in self.data.iter() {
+            match d.kind {
+                DataKind::Active { memory_index, init_expr } => {
+                    assert_eq!(memory_index, 0);
+
+                    let mut rdr = init_expr.get_operators_reader()
+                        .into_iter()
+                        .map(|r| r.unwrap());
+                    
+                    let offset = if let Operator::I32Const { value } = rdr.next().unwrap() {
+                        value
+                    } else {
+                        panic!()
+                    };
+                    
+                    assert_eq!(offset % 4, 0);
+
+                    assert!(matches!(rdr.next().unwrap(), Operator::End));
+                    assert!(rdr.next().is_none());
+                    
+                    // FIXME:
+                    let mut data = d.data.to_owned();
+                    while data.len() % 4 != 0 {
+                        data.push(0);
+                    }
+
+                    let mut ptr: usize = offset.try_into().unwrap();
+                    for word in d.data.chunks_exact(4) {
+                        let word = word.try_into().unwrap();
+                        let word = i32::from_le_bytes(word);
+
+                        cmds.push(self.set_word(ptr, word));
+
+                        ptr += 4;
+                    }
+                }
+                DataKind::Passive => todo!(),
+            }
+        }
+
+        cmds
+    }
+}
+
 fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     let mut types = TypeList::new();
     let mut globals = GlobalList::new();
@@ -1808,6 +1969,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     let mut exports = ExportList::new();
     let mut imports = ImportList::new();
     let mut tables = TableList::new();
+    let mut data = DataList::new();
 
     let mut func_reader = None;
 
@@ -1823,6 +1985,12 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
                 for import in i {
                     let import = import.unwrap();
                     imports.add_import(import);
+                }
+            }
+            Payload::DataSection(d) => {
+                for d in d {
+                    let d = d.unwrap();
+                    data.add_data(d);
                 }
             }
             Payload::ExportSection(e) => {
@@ -1915,6 +2083,23 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
                     ];
                     basic_blocks.push(bb);
                 }
+                Some("store_8") => {
+                    // TODO: Verify parameter types
+
+                    let mut bb = BasicBlock::new(CodeFuncIdx(i as u32), 0);
+
+                    let ret_reg = Register::Work(0);
+                    bb.instrs = vec![
+                        Instr::SetMemPtr(Register::Param(0)),
+                        Instr::StoreRow(Register::Param(1)),
+                        // TODO: Dedup
+                        Instr::Comment(" Pop return address".to_string()),
+                        Instr::PopI32Into(ret_reg),
+                        Instr::DynBranch(ret_reg, None),
+                    ];
+                    basic_blocks.push(bb);
+                   
+                }
                 field => todo!("{:?}", field),
             }
         } else {
@@ -1928,10 +2113,6 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
 
         functions.add_function(func);
     }
-
-
-
-
 
     let mut func_idx = CodeFuncIdx(imports.num_funcs() as u32);
     for e in codes {
@@ -2002,13 +2183,13 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     }
     */
 
-    let wasm_file = WasmFile { functions, memory, globals, exports, imports, types, tables };
+    let wasm_file = WasmFile { functions, memory, globals, exports, imports, types, tables, data };
 
     (basic_blocks, wasm_file)
 }
 
-fn run_ir(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> State {
-    let mut state = setup_state(basic_blocks, globals, memory, exports);
+fn run_ir(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList) -> State {
+    let mut state = setup_state(basic_blocks, globals, memory, exports, data);
 
     loop {
         if state.step() { break }
@@ -2019,7 +2200,7 @@ fn run_ir(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &Mem
     //state.registers.get(&Register::Return).unwrap().0
 }
 
-fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> State {
+fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList) -> State {
     let mut state = State::new(basic_blocks.to_owned(), globals, memory);
 
     for (i, global) in globals.globals.iter().enumerate() {
@@ -2040,6 +2221,34 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory:
         }
     }
 
+    for d in data.data.iter() {
+        match d.kind {
+            DataKind::Active { memory_index, init_expr } => {
+                assert_eq!(memory_index, 0);
+
+                let mut rdr = init_expr.get_operators_reader()
+                    .into_iter()
+                    .map(|r| r.unwrap());
+                
+                let offset: usize = if let Operator::I32Const { value } = rdr.next().unwrap() {
+                    value.try_into().unwrap()
+                } else {
+                    panic!()
+                };
+                
+                assert_eq!(offset % 4, 0);
+
+                assert!(matches!(rdr.next().unwrap(), Operator::End));
+                assert!(rdr.next().is_none());
+
+                let page = &mut state.memory[offset / 65536];
+
+                page[offset % 65536..][..d.data.len()].copy_from_slice(d.data);
+            }
+            DataKind::Passive => todo!(),
+        }
+    }
+
 
     let idx = state.get_pc(&Label::new(exports.get_func("_start"), 0));
 
@@ -2056,20 +2265,20 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory:
 
 }
 
-fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, insert_sync: bool) -> Vec<(String, String)> {
+fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
     for bb in basic_blocks {
-        /*
-        bb.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
-        */
 
         let mut new_block = bb.lower(globals, insert_sync);
         let name = get_block(&new_block.label);
 
+        new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
+
         if USE_GRID_CALL {
             new_block.instrs.insert(0, "setblock ~ ~1 ~ minecraft:air".to_string());
         }
+
 
         let contents = new_block.instrs.join("\n");
 
@@ -2121,11 +2330,17 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
 
     setup.push_str("\n# Make stack\n");
     setup.push_str("fill 0 0 0 30 0 0 minecraft:air replace\n");
-    setup.push_str("fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:55}}} replace\n");
+    setup.push_str("fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
 
     setup.push_str("\n# Make memory\n");
     for mem_cmd in memory.init() {
         setup.push_str(&mem_cmd);
+        setup.push('\n');
+    }
+
+    setup.push_str("\n# Init memory\n");
+    for data_cmd in data.init() {
+        setup.push_str(&data_cmd);
         setup.push('\n');
     }
 
@@ -2256,12 +2471,12 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
 use datapack_vm::interpreter::InterpError;
 
 fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> i32 {
-    let mut mir = setup_state(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+    let mut mir = setup_state(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data);
 
     let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
 
     loop {
-        println!("Stepping MIR, pc is {:?}", mir.pc);
+        //println!("Stepping MIR, pc is {:?}", mir.pc);
 
         let mir_halted = mir.step();
 
@@ -2286,7 +2501,7 @@ fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, 
 
         assert!(!mir_halted);
 
-        println!();
+        //println!();
 
     }
 
@@ -2334,12 +2549,25 @@ mod test {
     use wasmparser::ResizableLimits;
     use std::path::Path;
 
+    fn run_wasm_file(path: &Path) -> i32 {
+        use wasmtime::{Engine, Module, Instance, Store};
+
+        let engine = Engine::default();
+        let wasm = std::fs::read(path).unwrap();
+        let module = Module::new(&engine, wasm).unwrap();
+        
+        let mut store = Store::new(&engine, 0);
+        let instance = Instance::new(&mut store, &module, &[]).unwrap();
+        let start_func = instance.get_typed_func::<(), i32, _>(&mut store, "_start").unwrap();
+        start_func.call(&mut store, ()).unwrap()
+    }
+
     fn test_whole_program(path: &Path, expected: i32) {
         let file = std::fs::read(path).unwrap();
 
         let (basic_blocks, wasm_file) = compile(&file);
 
-        let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, true);
+        let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data, true);
 
         for func in mc_functions.iter() {
             println!("F: {:?}", func.0)
@@ -2348,6 +2576,8 @@ mod test {
         let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
         assert_eq!(result, expected);
+
+        assert_eq!(run_wasm_file(path), expected);
     }
 
     fn test_mir(program: Vec<Instr>, expected: i32) {
@@ -2371,15 +2601,16 @@ mod test {
             field: "_start",
             kind: ExternalKind::Function,
         });
+        let data = DataList::new();
 
-        let mc_functions = assemble(&basic_blocks, &globals, &memory, &exports, true);
+        let mc_functions = assemble(&basic_blocks, &globals, &memory, &exports, &data, true);
 
-        let mut mir = setup_state(&basic_blocks, &globals, &memory, &exports);
+        let mut mir = setup_state(&basic_blocks, &globals, &memory, &exports, &data);
 
         let mut cmd = setup_commands(&mc_functions, &globals, &memory, &exports);
 
         loop {
-            println!("Stepping MIR, pc is {:?}", mir.pc);
+            //println!("Stepping MIR, pc is {:?}", mir.pc);
 
             let mir_halted = mir.step();
 
@@ -2447,6 +2678,74 @@ mod test {
     }
 
     #[test]
+    fn endian() {
+        let val1 = 0x01_AB_CD_EF_i32;
+        let val1_bts = val1.to_le_bytes();
+
+        let val2 = 0x12_34_56_78_i32;
+        let val2_bts = val2.to_le_bytes();
+
+        let prelude = vec![
+            Instr::PushI32Const(4),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+            
+            Instr::PushI32Const(val1),
+            Instr::PopI32Into(Register::Work(1)),
+            Instr::StoreI32(Register::Work(1), 2),
+
+            Instr::PushI32Const(8),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+            
+            Instr::PushI32Const(val2),
+            Instr::PopI32Into(Register::Work(1)),
+            Instr::StoreI32(Register::Work(1), 2),
+        ];
+
+        let mut load_byte = prelude.clone();
+        load_byte.extend([
+            Instr::PushI32Const(5),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+
+            Instr::LoadI32_8U(Register::Return, 0),
+        ]);
+        test_mir(load_byte, val1_bts[1] as u32 as i32);
+
+        let mut load_halfword_unalign = prelude.clone();
+        load_halfword_unalign.extend([
+            Instr::PushI32Const(5),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+
+            Instr::LoadI32_16U(Register::Return, 0),
+        ]);
+        test_mir(load_halfword_unalign, u16::from_le_bytes([val1_bts[1], val1_bts[2]]) as u32 as i32);
+
+        let mut load_halfword_align = prelude.clone();
+        load_halfword_align.extend([
+            Instr::PushI32Const(6),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+
+            Instr::LoadI32_16U(Register::Return, 0),
+        ]);
+        test_mir(load_halfword_align, u16::from_le_bytes([val1_bts[2], val1_bts[3]]) as u32 as i32);
+
+        let mut load_word_unalign = prelude;
+        load_word_unalign.extend([
+            Instr::PushI32Const(7),
+            Instr::PopI32Into(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0)),
+
+            Instr::LoadI32(Register::Return, 0),
+           
+        ]);
+        test_mir(load_word_unalign, 0x34_56_78_01);
+    }
+
+    #[test]
     fn load_store() {
         let instrs = vec![
             Instr::PushI32Const(4),
@@ -2499,4 +2798,6 @@ mod test {
     }
 
     // TODO: Add a test for division signs
+
+    // TODO: Test I64 loads and stores
 }

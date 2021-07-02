@@ -17,3 +17,6 @@ path = "src/lib.rs"
 wasmparser = "0.78"
 serde_json = "1.0"
 datapack_vm = { path = "../../datapack_vm" }
+
+[dev-dependencies]
+wasmtime = "0.28"

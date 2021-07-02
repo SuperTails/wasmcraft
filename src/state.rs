@@ -14,6 +14,7 @@ impl Frame {
 #[derive(Debug)]
 enum Value {
 	I32(i32),
+    I64(i32, i32),
     Any(i32, i32),
 }
 
@@ -26,7 +27,7 @@ pub(crate) struct State {
 
 	stack: Vec<Value>,
 
-    memory: Vec<[u8; 65536]>,
+    pub memory: Vec<[u8; 65536]>,
 
     pub registers: HashMap<Register, (i32, i32)>,
 
@@ -120,7 +121,7 @@ impl State {
 
 		let instr = &bb.instrs[self.pc.1];
 
-        println!("{:?}", instr);
+        //println!("{:?}", instr);
 
 		match instr {
 			PushFrame(l) => {
@@ -193,24 +194,30 @@ impl State {
             }
             StoreI32(r, _a) => {
                 let v = self.registers.get(r).unwrap().0;
-                // FIXME: LE
-                let v = v.to_be_bytes();
+                let v = v.to_le_bytes();
 
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 page[self.memory_ptr as usize % 65536..][..4].copy_from_slice(&v);
             }
+            StoreRow(r) => {
+                let v = self.registers.get(r).unwrap().0;
+                let v = v.to_le_bytes();
+
+                let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                for i in 0..8 {
+                    page[self.memory_ptr as usize % 65536 + 4 * i..][..4].copy_from_slice(&v);
+                }
+            }
             StoreI32_16(r, _a) => {
                 let v = self.registers.get(r).unwrap().0 as u16;
-                // FIXME: LE
-                let v = v.to_be_bytes();
+                let v = v.to_le_bytes();
 
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 page[self.memory_ptr as usize % 65536..][..2].copy_from_slice(&v);
             }
             StoreI32_8(r, _a) => {
                 let v = self.registers.get(r).unwrap().0 as u8;
-                // FIXME: LE
-                let v = v.to_be_bytes();
+                let v = v.to_le_bytes();
 
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 page[self.memory_ptr as usize % 65536..][..1].copy_from_slice(&v);
@@ -219,24 +226,21 @@ impl State {
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 
                 let v = page[self.memory_ptr as usize % 65536..][..4].try_into().unwrap();
-                // FIXME: LE
-                let v = i32::from_be_bytes(v);
+                let v = i32::from_le_bytes(v);
                 set_reg_i32(&mut self.registers, *r, v);
             }
             LoadI32_16U(r, _a) => {
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 
                 let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
-                // FIXME: LE
-                let v = u16::from_be_bytes(v) as u32 as i32;
+                let v = u16::from_le_bytes(v) as u32 as i32;
                 set_reg_i32(&mut self.registers, *r, v);
             }
             LoadI32_8U(r, _a) => {
                 let page = &mut self.memory[self.memory_ptr as usize / 65536];
                 
                 let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
-                // FIXME: LE
-                let v = u8::from_be_bytes(v) as u32 as i32;
+                let v = u8::from_le_bytes(v) as u32 as i32;
                 set_reg_i32(&mut self.registers, *r, v);
             }
 
@@ -272,11 +276,23 @@ impl State {
                 let v = self.get_reg_any(r).0;
                 self.stack.push(Value::I32(v));
             }
+            PushI64FromSplit { lo, hi } => {
+                let v_lo = self.get_reg_any(lo).0;
+                let v_hi = self.get_reg_any(hi).0;
+
+                self.stack.push(Value::I64(v_lo, v_hi));
+            }
 
             PopI32Into(r) => {
                 let v = pop_i32_into(&mut self.stack);
 
                 self.registers.entry(*r).or_insert((0, 0)).0 = v;
+            }
+            PopI64IntoSplit { hi, lo } => {
+                let v = pop_i64_into(&mut self.stack);
+
+                self.registers.entry(*lo).or_insert((0, 0)).0 = v.0;
+                self.registers.entry(*hi).or_insert((0, 0)).0 = v.1;
             }
             PopValueInto(r) => {
                 let v = pop_any_into(&mut self.stack);
@@ -286,6 +302,15 @@ impl State {
 
             Drop => {
                 let _ = pop_any_into(&mut self.stack);
+            }
+            Select { dst_reg, true_reg, false_reg, cond_reg } => {
+                let c = self.get_reg_any(cond_reg).0;
+                let t = self.get_reg_any(true_reg);
+                let f = self.get_reg_any(false_reg);
+
+                let result = if c != 0 { t } else { f };
+
+                self.registers.insert(*dst_reg, result);
             }
 
 			Branch(l) => {
@@ -327,6 +352,8 @@ impl State {
                     "-=" => l - r,
                     "*=" => l * r,
                     "/=" => l / r,
+                    "/=u" => ((l as u32) / (r as u32)) as i32,
+                    "remu" => ((l as u32) % (r as u32)) as i32,
                     "&=" => l & r,
                     "|=" => l | r,
                     "^=" => l ^ r,
@@ -403,6 +430,16 @@ fn pop_i32_into(stack: &mut Vec<Value>) -> i32 {
     match a {
         Value::Any(v, _) => v,
         Value::I32(v) => v,
+        Value::I64(_, _) => panic!(),
+    }
+}
+
+fn pop_i64_into(stack: &mut Vec<Value>) -> (i32, i32) {
+    let a = stack.pop().unwrap();
+    match a {
+        Value::Any(lo, hi) => (lo, hi),
+        Value::I64(lo, hi) => (lo, hi),
+        Value::I32(_) => panic!(),
     }
 }
 
@@ -410,6 +447,7 @@ fn pop_any_into(stack: &mut Vec<Value>) -> (i32, i32) {
     let a = stack.pop().unwrap();
     match a {
         Value::Any(a, b) => (a, b),
+        Value::I64(a, b) => (a, b),
         Value::I32(a) => (a, 0),
     }
 }
