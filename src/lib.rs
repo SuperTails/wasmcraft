@@ -4,6 +4,7 @@ mod state;
 use datapack_vm::cir::{Function, FunctionId};
 use datapack_vm::interpreter::Interpreter;
 use std::convert::TryInto;
+use std::path::{Path, PathBuf};
 
 use state::State;
 
@@ -1722,11 +1723,8 @@ impl<'a> ExportList<'a> {
     }
 }
 
-fn save_datapack(mc_functions: Vec<(String, String)>, wasm_file: &WasmFile) {
+fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>, wasm_file: &WasmFile) {
     let datapack = datapack::Datapack::new();
-
-    let folder_path = std::path::Path::new("../out/");
-
 
     datapack.save(folder_path).unwrap();
     for (name, contents) in mc_functions.iter() {
@@ -1786,8 +1784,13 @@ struct WasmFile<'a> {
     functions: FunctionList,
 }
 
-pub fn run() {
-    let file = std::fs::read("../CHIP-8-Emulator/build/chip8.wasm").unwrap();
+pub struct RunOptions {
+    pub wasm_path: PathBuf,
+    pub out_path: Option<PathBuf>,
+}
+
+pub fn run(run_options: &RunOptions) {
+    let file = std::fs::read(&run_options.wasm_path).unwrap();
 
     let (basic_blocks, wasm_file) = compile(&file);
 
@@ -1797,7 +1800,9 @@ pub fn run() {
         println!("F: {:?}", func.0)
     }
 
-    save_datapack(mc_functions.clone(), &wasm_file);
+    let folder_path = run_options.out_path.as_deref().unwrap_or_else(|| Path::new("../out"));
+
+    save_datapack(folder_path, mc_functions.clone(), &wasm_file);
 
     let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
