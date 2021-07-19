@@ -1,18 +1,14 @@
 use wasmcraft::RunOptions;
 
 fn main() {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = std::env::args().skip(1);
 
-    let run_options = parse_args(args.into_iter()).unwrap();
+    let run_options = parse_args(args).unwrap();
 
     wasmcraft::run(&run_options);
 }
 
-enum ParseErr {
-
-}
-
-fn parse_args<I>(mut args: I) -> Result<RunOptions, String>
+fn parse_args<I>(args: I) -> Result<RunOptions, String>
     where I: Iterator<Item=String>
 {
     let mut wasm_path = None;

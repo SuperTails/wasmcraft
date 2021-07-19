@@ -5,10 +5,11 @@ use datapack_vm::cir::{Function, FunctionId};
 use datapack_vm::interpreter::Interpreter;
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
+use std::str;
 
 use state::State;
 
-use wasmparser::{Data, DataKind, Export, ExternalKind, FuncType, Global, Import, ImportSectionEntryType, MemoryImmediate, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
+use wasmparser::{Data, DataKind, Element, ElementItem, ElementKind, Export, ExternalKind, FuncType, Global, Import, ImportSectionEntryType, InitExpr, MemoryImmediate, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
 
 /// Represents wasm's "Function Index Space"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,132 +64,94 @@ impl BasicBlock<Instr> {
 
 const USE_GRID_CALL: bool = true;
 
-use std::collections::HashMap;
-
-fn find_target(operators: &[Operator], br_idx: usize, relative_depth: u32) -> usize {
-    let mut labels = vec![None];
-
-    let mut abs_depth = None;
-
-    let mut result = None;
-
-    for (idx, op) in operators.iter().enumerate() {
-        if br_idx == idx {
-            abs_depth = Some(labels.len() - relative_depth as usize);
-        }
-
-        match op {
-            Operator::Loop { .. } => {
-                labels.push(Some(idx));
-            }
-            Operator::Block { .. } => {
-                labels.push(None);
-            }
-            Operator::If { .. } => todo!(),
-            Operator::Else { .. } => todo!(),
-            Operator::End { .. } => {
-                let mut top = labels.pop().unwrap();
-                if top.is_none() {
-                    top = Some(idx);
-                }
-
-                if let Some(abs_depth) = abs_depth {
-                    if labels.len() + 1 == abs_depth && result.is_none() {
-                        result = top;
-                    }
-                }
-
-            }
-            _ => {}
-        }
-    }
-
-    assert!(labels.is_empty());
-
-    result.unwrap()
-}
-
-struct SplitBBInfo {
-    bb_count: usize,
-    branches: HashMap<usize, (Vec<Label>, Option<Label>)>
-}
-
-fn split_bbs(operators: &[Operator], func_idx: CodeFuncIdx) -> SplitBBInfo {
-    // First we assign each operator its basic block ID
-    
-    let mut op_bbs = vec![0; operators.len()];
-    let mut bbs_id = 0;
-
-    for (bbs, op) in op_bbs.iter_mut().zip(operators.iter()) {
-        match op {
-            // TODO: More
-            Operator::Br { .. } | Operator::BrIf { .. } | Operator::BrTable { .. } |
-            Operator::Call { .. } | Operator::CallIndirect { .. } |
-            Operator::Return => {
-                *bbs = bbs_id;
-                bbs_id += 1;
-            }
-            Operator::End | Operator::Loop { .. } => {
-                bbs_id += 1;
-                *bbs = bbs_id;
-            }
-            _ => {
-                *bbs = bbs_id;
-            }
-        }
-    }
-
-    println!("{:?}", op_bbs);
-
-    let mut branches = HashMap::new();
-
-    for (idx, op) in operators.iter().enumerate() {
-        match op {
-            Operator::Br { relative_depth } => {
-                let target = find_target(&operators, idx, *relative_depth);
-                let target = op_bbs[target];
-                branches.insert(idx, (vec![Label::new(func_idx, target)], None));
-            }
-            Operator::BrIf { relative_depth } => {
-                let t_target = find_target(&operators, idx, *relative_depth);
-                let t_target = op_bbs[t_target];
-                let f_target = op_bbs[idx + 1];
-
-                branches.insert(idx, (vec![Label::new(func_idx, t_target), Label::new(func_idx, f_target)], None));
-            }
-            Operator::BrTable { table } => {
-                let mut default = None;
-                let mut targets = Vec::new();
-                for target in table.targets() {
-                    let (depth, def) = target.unwrap();
-                    let target = find_target(&operators, idx, depth);
-                    let target = op_bbs[target];
-                    let target = Label::new(func_idx, target);
-
-                    if def {
-                        default = Some(target);
-                    } else {
-                        targets.push(target);
-                    }
-                }
-
-                branches.insert(idx, (targets, default));
-            }
-            _ => {}
-        }
-    }
-
-    SplitBBInfo {
-        bb_count: bbs_id + 1,
-        branches,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
     X,
     Y,
     Z,
+}
+
+#[derive(Debug, Clone)]
+struct BranchTarget {
+    label: Label,
+    to_pop: usize,
+    ty: Box<[Type]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Half {
+    Hi,
+    Lo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct HalfRegister(Register, Half);
+
+impl HalfRegister {
+    pub fn get(&self) -> String {
+        self.to_string()
+    }
+
+
+    fn split_half(w: &str) -> Result<(&str, Half), String> {
+        if let Some(w) = w.strip_suffix("%lo") {
+            Ok((w, Half::Lo))
+        } else if let Some(w) = w.strip_suffix("%hi") {
+            Ok((w, Half::Hi))
+        } else {
+            Err(format!("invalid register {}", w))
+        }
+    }
+}
+
+impl std::fmt::Display for HalfRegister {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.1 {
+            Half::Hi => write!(f, "{}", self.0.get_hi()),
+            Half::Lo => write!(f, "{}", self.0.get_lo()),
+        }
+    }
+}
+
+impl str::FromStr for HalfRegister {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        /*
+        let split_half = |w: &str| {
+            if let Some(w) = w.strip_suffix("%lo") {
+                Ok((w, false))
+            } else if let Some(w) = w.strip_suffix("%hi") {
+                Ok((w, true))
+            } else {
+                Err(format!("invalid register {}", s))
+            }
+        };
+        */
+
+        let (s, is_hi) = Self::split_half(s)?;
+        
+        if let Some(s) = s.strip_prefix("%work%") {
+            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
+            Ok(Self(Register::Work(idx), is_hi))
+        } else if let Some(s) = s.strip_prefix("%param%") {
+            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
+            Ok(Self(Register::Param(idx), is_hi))
+        } else if let Some(s) = s.strip_prefix("%return%") {
+            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
+            Ok(Self(Register::Return(idx), is_hi))
+        } else {
+            Err(format!("invalid register {}", s))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    GreaterThan,
+    LessThan,
+    GreaterThanEq,
+    LessThanEq,
 }
 
 #[derive(Debug, Clone)]
@@ -198,25 +161,40 @@ enum Instr {
 
     SetTurtleCoord(Register, Axis),
     SetTurtleBlock(Register),
+    TurtleGet(Register),
 
-    PushValueFrom(Register),
     PushI32From(Register),
     PushI64FromSplit { lo: Register, hi: Register },
+    PushI64From(Register),
     PushI32Const(i32),
     PushI64Const(i64),
     PushReturnAddress(Label),
 
-    Branch(Label),
+    SetConst(HalfRegister, i32),
+    Copy { dst: HalfRegister, src: HalfRegister },
+
+    RawBranch(Label),
+    Branch(BranchTarget),
     // Index into table, index of table
     // (None represents the wasmcraft-specific table)
     DynBranch(Register, Option<u32>),
-    BranchIf { t_name: Label, f_name: Label, cond: Register },
-    BranchTable { reg: Register, targets: Vec<Label>, default: Option<Label> },
+    BranchIf { t_name: BranchTarget, f_name: BranchTarget, cond: Register },
+    BranchTable { reg: Register, targets: Vec<BranchTarget>, default: Option<BranchTarget> },
 
-    I32Op { dst: Register, lhs: Register, op: &'static str, rhs: Register },
+    I64Add { dst: Register, lhs: Register, rhs: Register },
+
+    I64UComp { dst: Register, lhs: Register, op: Relation, rhs: Register },
+
+    I32MulTo64 { dst: Register, lhs: HalfRegister, rhs: HalfRegister },
+
+    I32Op { dst: HalfRegister, lhs: HalfRegister, op: &'static str, rhs: HalfRegister },
+
+    I32Ctz(Register),
+    I64Ctz { dst: Register, src: Register },
 
     PopValueInto(Register),
     PopI32Into(Register),
+    PopI64Into(Register),
     PopI64IntoSplit { hi: Register, lo: Register },
 
     LoadGlobalI32(Register),
@@ -233,7 +211,9 @@ enum Instr {
     /// reg = *memptr
     LoadI32(Register, u8),
     LoadI32_8U(Register, u8),
+    LoadI32_8S(Register, u8),
     LoadI32_16U(Register, u8),
+    LoadI32_16S(Register, u8),
     /// reg, align
     /// *memptr = reg
     StoreI32(Register, u8),
@@ -243,10 +223,13 @@ enum Instr {
     /// Stores 8 consecutive words
     StoreRow(Register),
 
-    AddI32Const(Register, i32),
+    AddI32Const(HalfRegister, i32),
     I64ExtendI32S { dst: Register, src: Register },
+    I64ExtendI32U(Register),
+
 
     I32Eqz { val: Register, cond: Register },
+    I64Eqz { val: Register, cond: Register },
 
     SetMemPtr(Register),
     SetGlobalPtr(u32),
@@ -257,15 +240,53 @@ enum Instr {
     PopFrame(u32),
 
     Drop,
-    Select { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
+    SelectI32 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
+}
+
+#[derive(Debug)]
+struct OpStack(Vec<Type>);
+
+impl OpStack {
+    pub fn new() -> Self {
+        OpStack(Vec::new())
+    }
+
+    pub fn push_i32(&mut self) {
+        self.0.push(Type::I32);
+    }
+
+    pub fn push_i64(&mut self) {
+        self.0.push(Type::I64);
+    }
+
+    pub fn push_ty(&mut self, ty: Type) {
+        self.0.push(ty);
+    }
+
+    pub fn pop_value(&mut self) -> Type {
+        self.0.pop().unwrap()
+    }
+
+    pub fn pop_i32(&mut self) {
+        self.pop_ty(Type::I32)
+    }
+
+    pub fn pop_i64(&mut self) {
+        self.pop_ty(Type::I64)
+    }
+
+    pub fn pop_ty(&mut self, ty: Type) {
+        assert_eq!(self.pop_value(), ty);
+    }
 }
 
 impl Instr {
     pub fn pop_into(reg: Register, ty: Type) -> Self {
         match ty {
             Type::I32 => Instr::PopI32Into(reg),
+            Type::I64 => Instr::PopI64Into(reg),
             _ => todo!("{:?}", ty)
         }
     }
@@ -273,6 +294,7 @@ impl Instr {
     pub fn push_from(reg: Register, ty: Type) -> Self {
         match ty {
             Type::I32 => Instr::PushI32From(reg),
+            Type::I64 => Instr::PushI64From(reg),
             _ => todo!("{:?}", ty)
         }
     }
@@ -310,6 +332,72 @@ impl Instr {
         }
     }
 
+    pub fn i64_neg(reg: Register) -> Vec<Self> {
+        let neg_one = Register::Work(3).as_lo();
+
+        let pos_one = Register::Work(4);
+
+        let temp = Register::Work(5);
+
+        assert_ne!(reg, neg_one.0);
+        assert_ne!(reg, pos_one);
+        assert_ne!(reg, temp);
+
+        vec![
+            Instr::SetConst(neg_one, -1),
+            Instr::SetConst(pos_one.as_lo(), 1),
+            Instr::SetConst(pos_one.as_hi(), 0),
+
+            // Bitwise invert the low part
+            Instr::I32Op { dst: reg.as_lo(), lhs: reg.as_lo(), op: "*=", rhs: neg_one },
+            Instr::AddI32Const(reg.as_lo(), -1),
+
+            // Bitwise invert the high part
+            Instr::I32Op { dst: reg.as_hi(), lhs: reg.as_hi(), op: "*=", rhs: neg_one },
+            Instr::AddI32Const(reg.as_hi(), -1),
+
+            Instr::I64Add { dst: temp, lhs: reg, rhs: pos_one },
+            Instr::Copy { dst: reg.as_lo(), src: temp.as_lo() },
+            Instr::Copy { dst: reg.as_hi(), src: temp.as_hi() },
+        ]
+    }
+
+    pub fn i64_mul(dst: Register, lhs: Register, rhs: Register) -> Vec<Self> {
+        assert_ne!(dst, lhs);
+        assert_ne!(dst, rhs);
+
+        let lo_product = Register::Work(3);
+
+        assert!(!matches!(dst, Register::Work(3 | 4 | 5)));
+        assert!(!matches!(lhs, Register::Work(3 | 4 | 5)));
+        assert!(!matches!(rhs, Register::Work(3 | 4 | 5)));
+
+        vec![
+            // dst = 0
+            Instr::SetConst(dst.as_lo(), 0),
+            Instr::SetConst(dst.as_hi(), 0),
+
+            // lo_product = (lhs as i64) * (rhs as i64)
+            Instr::I32MulTo64 { dst: lo_product, lhs: lhs.as_lo(), rhs: rhs.as_lo() },
+
+            // mid_1 = lhs_lo = lhs_lo * rhs_hi
+            Instr::I32Op { dst: lhs.as_lo(), lhs: lhs.as_lo(), op: "*=", rhs: rhs.as_hi() },
+            // mid_2 = lhs_hi = lhs_hi * rhs_lo
+            Instr::I32Op { dst: lhs.as_hi(), lhs: lhs.as_hi(), op: "*=", rhs: rhs.as_lo() },
+
+            // dst[0] = lo_product[0]
+            Instr::I32Op { dst: dst.as_lo(), lhs: dst.as_lo(), op: "+=", rhs: lo_product.as_lo() },
+
+            // dst[1] = lo_product[1]
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lo_product.as_hi() },
+
+            // dst[1] += mid_1
+            // dst[2] += mid_2
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_lo() },
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_hi() },
+        ]
+    }
+
     pub fn incr_stack_ptr_half(&self, body: &mut Vec<String>) {
         body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~ ~".to_string());
         body.push("scoreboard players add %stackptr wasm 1".to_string());
@@ -330,109 +418,90 @@ impl Instr {
         body.push("scoreboard players remove %stackptr wasm 2".to_string());
     }
 
-    pub fn make_i32_op(&self, lhs: Register, op: &str, rhs: Register, body: &mut Vec<String>) -> Register {
+    pub fn make_i32_op(&self, mut lhs: HalfRegister, mut op: &str, mut rhs: HalfRegister, body: &mut Vec<String>, dst: HalfRegister) {
         match op {
             "+=" | "-=" | "*=" | "%=" => {
-                body.push(format!("scoreboard players operation {} reg {} {} reg", lhs.get_lo(), op, rhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg {} {} reg", lhs, op, rhs));
+                assert_eq!(lhs, dst);
             }
             "/=" => {
                 // Minecraft division always rounds towards negative infinity
-                let tmp = Register::Work(2);
-
-                assert_ne!(lhs, tmp);
-                assert_ne!(rhs, tmp);
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
 
                 // tmp = (rhs < 0)
-                body.push(format!("execute store success score {} reg if score {} reg matches ..-1", tmp.get_lo(), rhs.get_lo()));
-                body.push(format!("execute if score {} reg matches 1..1 run scoreboard players operation {} reg *= %%-1 reg", tmp.get_lo(), lhs.get_lo()));
-                body.push(format!("execute if score {} reg matches 1..1 run scoreboard players operation {} reg *= %%-1 reg", tmp.get_lo(), rhs.get_lo()));
+                body.push(format!("execute store success score {} reg if score {} reg matches ..-1", dst, rhs));
+                body.push(format!("execute if score {} reg matches 1..1 run scoreboard players operation {} reg *= %%-1 reg", dst, lhs));
+                body.push(format!("execute if score {} reg matches 1..1 run scoreboard players operation {} reg *= %%-1 reg", dst, rhs));
 
-                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg += {} reg", lhs.get_lo(), tmp.get_lo(), rhs.get_lo()));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players remove {} reg 1", lhs.get_lo(), tmp.get_lo()));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", tmp.get_lo(), rhs.get_lo()));
-
-                tmp
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg += {} reg", lhs, dst, rhs));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players remove {} reg 1", lhs, dst));
+                body.push(format!("scoreboard players operation {} reg /= {} reg", dst, rhs));
             }
             "/=u" => {
                 // FIXME:
 
-                let tmp = Register::Work(2);
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
 
-                assert_ne!(lhs, tmp);
-                assert_ne!(rhs, tmp);
-
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", lhs.get_lo(), rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
-
-                tmp
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs));
+                body.push(format!("scoreboard players operation {} reg /= {} reg", lhs, rhs));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
             }
             "remu" => {
                 // FIXME: 
-                let tmp = Register::Work(2);
 
-                assert_ne!(lhs, tmp);
-                assert_ne!(rhs, tmp);
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
 
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs.get_lo(), rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
-
-                tmp
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs));
+                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs, rhs));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
             }
             "rems" => {
                 // FIXME: 
-                let tmp = Register::Work(2);
 
-                assert_ne!(lhs, tmp);
-                assert_ne!(rhs, tmp);
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
 
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs.get_lo()));
-                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs.get_lo(), rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", tmp.get_lo(), lhs.get_lo()));
-
-                tmp
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs));
+                body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs));
+                body.push(format!("scoreboard players operation {} reg %= {} reg", lhs, rhs));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
             }
 
             "&=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:and".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", lhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
             }
             "|=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:or".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", lhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
             }
             "^=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:xor".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", lhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
             }
             "shl" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:shl".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", lhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
             }
             "shru" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.get_lo()));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.get_lo()));
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:lshr".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", lhs.get_lo()));
-                lhs
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
             }
             "gts" | "ges" | "les" | "lts" | "==" => {
                 let score_op = match op {
@@ -445,65 +514,45 @@ impl Instr {
                     _ => unreachable!(),
                 };
 
-                let condreg = Register::Work(2);
-
-                body.push(format!("execute store success score {} reg if score {} reg {} {} reg", condreg.get_lo(), lhs.get_lo(), score_op, rhs.get_lo()));
-
-                condreg
+                body.push(format!("execute store success score {} reg if score {} reg {} {} reg", dst, lhs, score_op, rhs));
             }
             "!=" => {
-                let condreg = Register::Work(2);
-
-                body.push(format!("execute store success score {} reg unless score {} reg = {} reg", condreg.get_lo(), lhs.get_lo(), rhs.get_lo()));
-
-                condreg
+                body.push(format!("execute store success score {} reg unless score {} reg = {} reg", dst, lhs, rhs));
             }
-            "geu" | "gtu" => {
-                let score_op = match op {
-                    "gtu" => ">",
-                    "geu" => ">=",
-                    _ => unreachable!(),
-                };
+            "geu" | "gtu" | "leu" | "ltu" => {
+                if op == "geu" {
+                    op = "leu";
+                    std::mem::swap(&mut lhs, &mut rhs);
+                } else if op == "gtu" {
+                    op = "ltu";
+                    std::mem::swap(&mut lhs, &mut rhs);
+                }
 
-                let condreg = Register::Work(2);
-
-                let l = lhs.get_lo();
-                let r = rhs.get_lo();
-                let c = condreg.get_lo();
-
-                body.push(format!("scoreboard players set {} reg 0", c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 1", l, c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 0", r, c));
-                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
-                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
-               
-                condreg
-            }
-            "leu" | "ltu" => {
                 let score_op = match op {
                     "ltu" => "<",
                     "leu" => "<=",
                     _ => unreachable!(),
                 };
 
-                let condreg = Register::Work(2);
+                /*
+                    dst = false
+                    if lhs < 0 && rhs >= 0 { reg = false }
+                    if lhs >= 0 && rhs < 0 { reg = true }
+                    if lhs < 0 && rhs < 0 && lhs < rhs { reg = true }
+                    if lhs >= 0 && rhs >= 0 && lhs < rhs { reg = true }
+                */
 
-                let l = lhs.get_lo();
-                let r = rhs.get_lo();
-                let c = condreg.get_lo();
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
 
-                body.push(format!("scoreboard players set {} reg 0", c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 0", l, c));
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg 1", r, c));
-                body.push(format!("execute if score {} reg matches ..-1 run execute if score {} reg matches ..-1 run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
-                body.push(format!("execute if score {} reg matches 0.. run execute if score {} reg matches 0.. run execute if score {} reg {} {} reg run scoreboard players set {} reg 1", l, r, l, score_op, r, c));
-               
-                condreg
+                body.push(format!("scoreboard players set {} reg 0", dst));
+                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 0", lhs, rhs, dst));
+                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs, rhs, dst));
+                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
+                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
             }
             _ => {
-                println!("TODO: make_i32_op {}", op);
-
-                Register::Work(0)
+                todo!("TODO: make_i32_op {}", op);
             }
         }
     }
@@ -526,8 +575,108 @@ impl Instr {
         self.incr_stack_ptr_half(body);
     }
 
+    /*
+    pub fn modify_stack(&self, op_stack: &mut OpStack, global_list: &GlobalList) {
+        use Instr::*;
+
+        match self {
+            Comment(_) => {},
+            Tellraw(_) => {},
+            SetTurtleCoord(_, _) => {},
+            SetTurtleBlock(_) => {},
+            SetMemPtr(_) => {},
+            PushValueFrom(_) => op_stack.push_value(),
+            PushI32From(_) => op_stack.push_i32(),
+            PushI64FromSplit { lo, hi } => op_stack.push_i64(),
+            PushI32Const(_) => op_stack.push_i32(),
+            PushI64Const(_) => op_stack.push_i64(),
+            PushReturnAddress(_) => op_stack.push_i32(),
+            Branch(_) => {},
+            DynBranch(_, _) => {},
+            BranchIf { t_name, f_name, cond } => {},
+            BranchTable { reg, targets, default } => {},
+            I32Op { dst, lhs, op, rhs } => {},
+            PopValueInto(_) => op_stack.pop_value(),
+            PopI32Into(_) => op_stack.pop_i32(),
+            PopI64IntoSplit { hi, lo } => op_stack.pop_i64(),
+            LoadGlobalI32(_) => {},
+            StoreGlobalI32(_) => {},
+            LoadGlobalI64(_) => {},
+            StoreGlobalI64(_) => {},
+            LoadLocalI32(_) => {},
+            StoreLocalI32(_) => {},
+            LoadLocalI64(_) => {},
+            StoreLocalI64(_) => {},
+            LoadI32(_, _) => {},
+            LoadI32_8U(_, _) => {},
+            LoadI32_16U(_, _) => {},
+            StoreI32(_, _) => {},
+            StoreI32_8(_, _) => {},
+            StoreI32_16(_, _) => {},
+            StoreRow(_) => {},
+            AddI32Const(_, _) => {},
+            I64ExtendI32S { dst, src } => {},
+            I32Eqz { val, cond } => {},
+            SetGlobalPtr(_) => {},
+            SetLocalPtr(_) => {},
+            ResetFrames => {},
+            PushFrame(_) => {},
+            PopFrame(_) => {},
+            Drop => op_stack.pop_value(),
+            SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {},
+            Unreachable => {},
+        }
+    }
+    */
+
+    fn add_condition(code: &mut Vec<String>, cond: &str)  {
+        for c in code.iter_mut() {
+            if !c.starts_with('#') {
+                *c = format!("{}{}", cond, *c);
+            }
+        }
+    }
+
+    fn branch(target: &BranchTarget, global_list: &GlobalList) -> Vec<String> {
+        let mut body = Vec::new();
+
+        let entry = get_block(&target.label);
+
+        body.push(format!("#   Branch to {}", entry));
+        for (idx, ty) in target.ty.iter().enumerate().rev() {
+            // TODO: Should I use the return register?
+            Instr::pop_into(Register::Return(idx as u32), *ty).lower(&mut body, global_list);
+        }
+
+        // TODO: Optimize
+        for _ in 0..target.to_pop {
+            Instr::Drop.lower(&mut body, global_list)
+        }
+
+        for (idx, ty) in target.ty.iter().enumerate() {
+            Instr::push_from(Register::Return(idx as u32), *ty).lower(&mut body, global_list);
+        }
+
+        Instr::RawBranch(target.label.clone()).lower(&mut body, global_list);
+
+        body
+    }
+
     pub fn lower(&self, body: &mut Vec<String>, global_list: &GlobalList) {
         body.push(format!("# {:?}", self));
+
+        let blocks = [
+            "minecraft:air",
+            "minecraft:cobblestone",
+            "minecraft:granite",
+            "minecraft:andesite",
+            "minecraft:diorite",
+            "minecraft:lapis_block",
+            "minecraft:iron_block",
+            "minecraft:gold_block",
+            "minecraft:diamond_block",
+            "minecraft:redstone_block",
+        ];
 
         use Instr::*;
         match self {
@@ -538,23 +687,14 @@ impl Instr {
                 body.push(format!("tellraw @a {}", s));
             }
 
+            SetConst(reg, v) => {
+                body.push(format!("scoreboard players set {} reg {}", reg.get(), v));
+            }
+
             SetTurtleCoord(reg, axis) => {
                 body.push(format!("execute as @e[tag=turtle] store result entity @s Pos[{}] double 1 run scoreboard players get {} reg", *axis as u32, reg.get_lo()));
             }
             SetTurtleBlock(reg) => {
-                let blocks = [
-                    "minecraft:air",
-                    "minecraft:cobblestone",
-                    "minecraft:granite",
-                    "minecraft:andesite",
-                    "minecraft:diorite",
-                    "minecraft:lapis_block",
-                    "minecraft:iron_block",
-                    "minecraft:gold_block",
-                    "minecraft:diamond_block",
-                    "minecraft:redstone_block",
-                ];
-
                 for (idx, block) in blocks.iter().enumerate() {
                     body.push(format!("execute at @e[tag=turtle] if score {} reg matches {}..{} run setblock ~ ~ ~ {} destroy\n", reg.get_lo(), idx, idx, block));
                 }
@@ -564,6 +704,18 @@ impl Instr {
                 s.push_str(&reg.get_lo());
                 s.push_str(r#"","objective":"reg"}}]"#);
                 body.push(s);
+            }
+            TurtleGet(reg) => {
+                body.push(format!("scoreboard players set {} reg -1", reg.as_lo()));
+                for (i, b) in blocks.iter().enumerate() {
+                    body.push(format!("execute at @e[tag=turtle] if block ~ ~ ~ {} run scoreboard players set {} reg {}", b, reg.get_lo(), i));
+                }
+            }
+
+            Copy { dst, src } => {
+                if dst != src {
+                    body.push(format!("scoreboard players operation {} reg = {} reg", dst, src));
+                }
             }
 
             SetMemPtr(reg) => {
@@ -577,6 +729,13 @@ impl Instr {
 
             &PopI32Into(reg) => {           
                 self.decr_stack_ptr(body);
+                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+            }
+            &PopI64Into(reg) => {
+                self.decr_stack_ptr_half(body);
+                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_hi()));
+
+                self.decr_stack_ptr_half(body);
                 body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
             }
             PopI64IntoSplit { hi, lo } => {
@@ -617,8 +776,8 @@ impl Instr {
             &AddI32Const(reg, value) => {
                 use std::cmp::Ordering::*;
                 match value.cmp(&0) {
-                    Greater => body.push(format!("scoreboard players add {} reg {}", reg.get_lo(), value)),
-                    Less => body.push(format!("scoreboard players remove {} reg {}", reg.get_lo(), -value)),
+                    Greater => body.push(format!("scoreboard players add {} reg {}", reg, value)),
+                    Less => body.push(format!("scoreboard players remove {} reg {}", reg, -value)),
                     Equal => {},
                 }
             }
@@ -626,35 +785,149 @@ impl Instr {
                 if dst != src {
                     body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), src.get_lo()));
                 }
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} -1", src.get_lo(), dst.get_hi()));
-                body.push(format!("execute if score {} reg matches 0.. run scoreboard players set {} 0", src.get_lo(), dst.get_hi()));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg -1", src.get_lo(), dst.get_hi()));
+                body.push(format!("execute if score {} reg matches 0.. run scoreboard players set {} reg 0", src.get_lo(), dst.get_hi()));
+            }
+            I64ExtendI32U(reg) => {
+                body.push(format!("scoreboard players set {} reg 0", reg.get_hi()));
+            }
+
+            I32MulTo64 { dst, lhs, rhs } => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                body.push("function intrinsic:mul_32_to_64".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.as_lo()));
+                body.push(format!("scoreboard players operation {} reg = %return%1 reg", dst.as_hi()));
+            }
+
+            I64Add { dst, lhs, rhs } => {
+                let carry = Register::Work(10).as_lo();
+
+                assert_ne!(*dst, carry.0);
+                assert_ne!(*lhs, carry.0);
+                assert_ne!(*rhs, carry.0);
+                assert_ne!(dst, lhs);
+                assert_ne!(dst, rhs);
+                assert_ne!(lhs, rhs);
+
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), lhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_hi(), lhs.get_hi()));
+
+                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_lo(), rhs.get_lo()));
+                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), rhs.get_hi()));
+
+                /*
+                    Carrying:
+
+                    if lhs < 0 && rhs < 0 {
+                        true
+                    } else if lhs < 0 && rhs >= 0 {
+                        lhs + rhs >= 0
+                    } else if lhs >= 0 && rhs < 0 {
+                        lhs + rhs >= 0
+                    } else {
+                        false
+                    }
+                
+                */
+
+                body.push(format!("scoreboard players set {} reg 0", carry));
+                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), carry));
+                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
+                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
+
+                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), carry));
+            }
+
+            &I64UComp { dst, mut lhs, mut op, mut rhs } => {
+                /*
+                    if lhs_hi ltu rhs_hi:
+                        return true
+                    if lhs_hi gtu rhs_hi:
+                        return false
+                    if lhs_hi == rhs_hi:
+                        return x_lo ltu y_lo
+                */
+
+                if op == Relation::GreaterThan {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::LessThan;
+                } else if op == Relation::GreaterThanEq {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::GreaterThan;
+                }
+
+                if op != Relation::LessThan {
+                    todo!()
+                }
+
+                assert!(!matches!(lhs, Register::Work(3 | 4 | 5 | 6)));
+                assert!(!matches!(rhs, Register::Work(3 | 4 | 5 | 6)));
+                assert!(!matches!(dst, Register::Work(3 | 4 | 5 | 6)));
+
+                assert_ne!(dst, lhs);
+                assert_ne!(dst, rhs);
+
+                let hi_is_lesser = Register::Work(3).as_lo();
+                let hi_is_greater = Register::Work(4).as_lo();
+                let hi_is_equal = Register::Work(5).as_lo();
+
+                let lo_is_lesser = Register::Work(6).as_lo();
+
+                Instr::I32Op { dst: hi_is_lesser, lhs: lhs.as_hi(), op: "ltu", rhs: rhs.as_hi() }.lower(body, global_list);
+                Instr::I32Op { dst: hi_is_greater, lhs: lhs.as_hi(), op: "gtu", rhs: rhs.as_hi() }.lower(body, global_list);
+                Instr::I32Op { dst: hi_is_equal, lhs: lhs.as_hi(), op: "==", rhs: rhs.as_hi() }.lower(body, global_list);
+                Instr::I32Op { dst: lo_is_lesser, lhs: lhs.as_lo(), op: "ltu", rhs: rhs.as_lo() }.lower(body, global_list);
+
+                body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 1", hi_is_lesser, dst.as_lo()));
+                body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 0", hi_is_greater, dst.as_lo()));
+                body.push(format!("execute if score {} reg matches 1.. run scoreboard players operation {} reg = {} reg", hi_is_equal, dst.as_lo(), lo_is_lesser));
             }
 
             I32Eqz { val, cond } => {
                 body.push(format!("scoreboard players set {} reg 0", cond.get_lo()));
                 body.push(format!("execute if score {} reg matches 0..0 run scoreboard players set {} reg 1", val.get_lo(), cond.get_lo()));
             }
+            I64Eqz { val, cond } => {
+                body.push(format!("scoreboard players set {} reg 1", cond.get_lo()));
+                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_lo(), cond.get_lo()));
+                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_hi(), cond.get_lo()));
+            }
             &I32Op { dst, lhs, op, rhs } => {
-                let d = self.make_i32_op(lhs, op, rhs, body);
-                assert_eq!(d, dst);
+                self.make_i32_op(lhs, op, rhs, body, dst);
+            }
+            I32Ctz(reg) => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
+                body.push("function intrinsic:ctz".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
+            }
+            I64Ctz { src, dst } => {
+                assert_ne!(src, dst);
+
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_hi()));
+                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_lo()));
+                body.push("function intrinsic:ctz".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players add {} reg 32", src.get_lo(), dst.get_lo()));
+                body.push(format!("scoreboard players set {} reg 0", dst.get_hi()));
             }
 
             PushI32From(reg) => {
                 body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
                 self.incr_stack_ptr(body);
             }
+            PushI64From(reg) => {
+                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+                self.incr_stack_ptr_half(body);
+
+                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
+                self.incr_stack_ptr_half(body);
+            }
             PushI64FromSplit { lo, hi } => {
                 body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", lo.get_lo()));
                 self.incr_stack_ptr_half(body);
 
                 body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", hi.get_lo()));
-                self.incr_stack_ptr_half(body);
-            }
-            &PushValueFrom(reg) => {
-                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-                self.incr_stack_ptr_half(body);
-
-                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
                 self.incr_stack_ptr_half(body);
             }
             PushI32Const(value) => {
@@ -671,11 +944,14 @@ impl Instr {
                 self.incr_stack_ptr(body);
             }
 
-            Branch(entry) => {
+            RawBranch(entry) => {
                 let entry = get_block(entry);
 
                 body.push(format!("#   Jump to {}", entry));
                 body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
+            }
+            Branch(target) => {
+                body.extend(Instr::branch(target, global_list))
             }
             &DynBranch(reg, table_idx) => {
                 assert_eq!(reg, Register::Work(0));
@@ -687,26 +963,39 @@ impl Instr {
                 }
             }
             BranchIf { t_name, f_name, cond } => {
-                let t_name = get_block(t_name);
-                let f_name = get_block(f_name);
+                body.push(format!("#   {:?}", self));
+                let mut true_code = Instr::branch(t_name, global_list);
+                Instr::add_condition(&mut true_code, &format!("execute unless score {} reg matches 0..0 run ", cond.get_lo()));
+                body.extend(true_code);
+
+                /*let t_name = get_block(t_name);
                 
                 body.push(format!("execute unless score {} reg matches 0..0 run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", cond.get_lo(), t_name));
-                body.push(format!("execute if score {} reg matches 0..0 run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", cond.get_lo(), f_name));
+                */
+
+                let mut false_code = Instr::branch(f_name, global_list);
+                Instr::add_condition(&mut false_code, &format!("execute if score {} reg matches 0..0 run ", cond.get_lo()));
+                body.extend(false_code);
             }
             BranchTable { reg, targets, default } => {
-                for (idx, target) in targets.iter().enumerate() {
-                    let target = get_block(target);
-                    // FIXME: Reg0
-                    body.push(format!("execute if score {} reg matches {}..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy\n", reg.get_lo(), idx, idx, target));
-                }
-
-                if let Some(default) = default {
-                    let default = get_block(default);
-                    body.push(format!("execute unless score {} reg matches 0..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", reg.get_lo(), targets.len() - 1, default));
+                if targets.is_empty() {
+                    body.extend(Instr::branch(default.as_ref().unwrap(), global_list));
                 } else {
-                    let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1);
-                    s.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
-                    body.push(s);
+                    for (idx, target) in targets.iter().enumerate() {
+                        let mut code = Instr::branch(target, global_list);
+                        Instr::add_condition(&mut code, &format!("execute if score {} reg matches {}..{} run ", reg.get_lo(), idx, idx));
+                        body.extend(code);
+                    }
+
+                    if let Some(default) = default {
+                        let mut code = Instr::branch(default, global_list);
+                        Instr::add_condition(&mut code, &format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1));
+                        body.extend(code);
+                    } else {
+                        let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1);
+                        s.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
+                        body.push(s);
+                    }
                 }
             }
 
@@ -731,14 +1020,29 @@ impl Instr {
             }
             LoadI32_8U(dst, _align) => {
                 body.push("function intrinsic:load_byte".to_string());
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
                 // TODO: Determine if load_byte actually returns a byte
                 body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+            }
+            LoadI32_8S(dst, _align) => {
+                body.push("function intrinsic:load_byte".to_string());
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+                // TODO: Determine if load_byte actually returns a byte
+                body.push(format!("execute if score {} reg matches 128..255 run scoreboard players add {} reg -256", dst.get_lo(), dst.get_lo()));
             }
             LoadI32_16U(dst, _align) => {
                 // TODO:
                 body.push("function intrinsic:load_halfword_unaligned".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
                 // TODO: Determine if load_halfword actually returns a halfword
                 body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+            }
+            LoadI32_16S(dst, _align) => {
+                // TODO:
+                body.push("function intrinsic:load_halfword_unaligned".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                // TODO: Determine if load_halfword actually returns a halfword
+                body.push(format!("execute if score {} reg matches 32768..65535 run scoreboard players add {} reg -65536", dst.get_lo(), dst.get_lo()));
             }
             &StoreI32(src, _align) => {
                 body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
@@ -781,15 +1085,15 @@ impl Instr {
             Drop => {
                 self.decr_stack_ptr(body);
             }
-            Select { dst_reg, true_reg, false_reg, cond_reg } => {
+            SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
                 assert_ne!(dst_reg, false_reg);
                 assert_ne!(dst_reg, cond_reg);
 
                 body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
+                //body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
 
                 body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_lo(), false_reg.get_lo()));
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
+                //body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
             }
 
             Unreachable => {
@@ -799,51 +1103,20 @@ impl Instr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Register {
     Work(u32),
     Param(u32),
-    Return,
+    Return(u32),
 }
 
 impl Register {
-    fn split_half(w: &str) -> Result<(&str, bool), String> {
-        if let Some(w) = w.strip_suffix("%lo") {
-            Ok((w, false))
-        } else if let Some(w) = w.strip_suffix("%hi") {
-            Ok((w, true))
-        } else {
-            Err(format!("invalid register {}", w))
-        }
+    pub fn as_lo(self) -> HalfRegister {
+        HalfRegister(self, Half::Lo)
     }
 
-
-    pub fn parse(s: &str) -> Result<(Self, bool), String> {
-        /*
-        let split_half = |w: &str| {
-            if let Some(w) = w.strip_suffix("%lo") {
-                Ok((w, false))
-            } else if let Some(w) = w.strip_suffix("%hi") {
-                Ok((w, true))
-            } else {
-                Err(format!("invalid register {}", s))
-            }
-        };
-        */
-
-        let (s, is_hi) = Self::split_half(s)?;
-        
-        if let Some(s) = s.strip_prefix("%work%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok((Register::Work(idx), is_hi))
-        } else if let Some(s) = s.strip_prefix("%param%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok((Register::Param(idx), is_hi))
-        } else if s == "%return" {
-            Ok((Register::Return, is_hi))
-        } else {
-            Err(format!("invalid register {}", s))
-        }
+    pub fn as_hi(self) -> HalfRegister {
+        HalfRegister(self, Half::Hi)
     }
 
     pub fn get_lo(&self) -> String {
@@ -854,8 +1127,8 @@ impl Register {
             Register::Param(i) => {
                 format!("%param%{}%lo", i)
             }
-            Register::Return => {
-                "%return%lo".to_string()
+            Register::Return(i) => {
+                format!("%return%{}%lo", i)
             }
         }
     }
@@ -868,24 +1141,131 @@ impl Register {
             Register::Param(i) => {
                 format!("%param%{}%hi", i)
             }
-            Register::Return => {
-                "%return%hi".to_string()
+            Register::Return(i) => {
+                format!("%return%{}%hi", i)
             }
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WasmValue {
+    I32(i32),
+    I64(i64),
+}
+
+#[derive(Debug, Clone)]
+struct ControlFlowEntry {
+    /// The location that should be jumped to when this branch is targeted
+    label: Option<Label>,
+    /// The size of the stack 'underneath' this block
+    stack_size: usize,
+    /// The types that should be popped/pushed when this branch is targeted
+    target_tys: Box<[Type]>,
+
+    else_block: Option<(usize, Box<[Type]>)>,
+
+    /// The index of the block that immediately follows the End of this block
+    next_block: usize,
+    /// The types that should be popped/pushed at the End of this block
+    outputs: Box<[Type]>,
+}
+
+fn get_input_tys(ty: TypeOrFuncType, types: &TypeList) -> Box<[Type]> {
+     match ty {
+        TypeOrFuncType::Type(_) => Vec::new().into_boxed_slice(),
+        TypeOrFuncType::FuncType(i) => {
+            let ty = &types.types[i as usize];
+            if let TypeDef::Func(ty) = ty {
+                ty.params.clone()
+            } else {
+                panic!()
+            }
+        }
+    }
+}
+
+fn get_output_tys(ty: TypeOrFuncType, types: &TypeList) -> Box<[Type]> {
+    match ty {
+        TypeOrFuncType::Type(Type::EmptyBlockType) => Vec::new().into_boxed_slice(),
+        TypeOrFuncType::Type(t) => vec![t].into_boxed_slice(),
+        TypeOrFuncType::FuncType(i) => {
+            let ty = &types.types[i as usize];
+            if let TypeDef::Func(ty) = ty {
+                ty.returns.clone()
+            } else {
+                panic!()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FlowStack(Vec<ControlFlowEntry>);
+
+impl FlowStack {
+    pub fn new(ty: TypeOrFuncType, types: &TypeList, exit_label: Label) -> Self {
+        let outputs = get_output_tys(ty, types);
+        let target_tys = outputs.clone();
+
+        FlowStack(vec![ControlFlowEntry {
+            label: Some(exit_label),
+            stack_size: 0,
+            target_tys,
+            else_block: None,
+            outputs,
+            next_block: 1,
+        }])
+    }
+}
+
 struct FuncBodyStream {
+    func_idx: CodeFuncIdx,
     basic_blocks: Vec<BasicBlock<Instr>>,
+    reachable: Vec<bool>,
+    bb_index: usize,
     depth: usize,
+
+    op_stack: OpStack,
+    flow_stack: FlowStack,
 }
 
 impl FuncBodyStream {
-    pub fn new() -> Self {
+    pub fn new(func_ty: TypeOrFuncType, types: &TypeList, func_idx: CodeFuncIdx) -> Self {
         FuncBodyStream {
-            basic_blocks: Vec::new(),
+            func_idx,
+            // 0 is always the entry point, 1 is always the exit point
+            basic_blocks: vec![BasicBlock::new(func_idx, 0), BasicBlock::new(func_idx, 1)],
+            reachable: vec![true, true],
+            bb_index: 0,
             depth: 0,
+            op_stack: OpStack::new(),
+            flow_stack: FlowStack::new(func_ty, types, Label::new(func_idx, 1)),
         }
+    }
+
+    fn setup_epilogue(&mut self, local_count: u32, returns: &[Type]) {
+        let old_bb_idx = self.bb_index;
+        self.bb_index = 1;
+
+        self.push_instr(Instr::Comment(" Pop frame".to_string()));
+        self.push_instr(Instr::PopFrame(local_count));
+
+        // Save return value so we can get to the 
+        // return address
+        self.push_instr(Instr::Comment(" Save return values".to_string()));
+        for (idx, ty) in returns.iter().enumerate().rev() {
+            self.push_instr(Instr::pop_into(Register::Return(idx as u32), *ty));
+            self.op_stack.pop_ty(*ty);
+        }
+
+        self.push_instr(Instr::Comment(" Pop return address".to_string()));
+        // Pop return address
+        let reg = Register::Work(0);
+        self.push_instr(Instr::PopI32Into(reg));
+        self.push_instr(Instr::DynBranch(reg, None));
+
+        self.bb_index = old_bb_idx;
     }
 
     pub fn get_i32_dst(&mut self, lhs: Register, op: &str, rhs: Register) -> Register {
@@ -895,7 +1275,7 @@ impl FuncBodyStream {
                 lhs
             }
             "gts" | "ges" | "les" | "lts" | "==" | "!=" |
-            "geu" | "gtu" | "leu" | "ltu" | "/=" | "/=u" | "remu" | "rems" => {
+            "gtu" | "geu" | "leu" | "ltu" | "/=" | "/=u" | "remu" | "rems" => {
                 Register::Work(2)
             }
             _ => {
@@ -916,27 +1296,38 @@ impl FuncBodyStream {
         let lhs = Register::Work(0);
 
         self.push_instr(Instr::PopI32Into(rhs));
+        self.op_stack.pop_i32();
         self.push_instr(Instr::PopI32Into(lhs));
+        self.op_stack.pop_i32();
         let dst = self.get_i32_dst(lhs, op, rhs);
-        self.push_instr(Instr::I32Op { dst, lhs, op, rhs });
+
+        self.push_instr(Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op, rhs: rhs.as_lo() });
+
         self.push_instr(Instr::PushI32From(dst));
+        self.op_stack.push_i32();
     }
 
     pub fn push_instr(&mut self, instr: Instr) {
-        self.basic_blocks.last_mut().unwrap().instrs.push(instr);
+        self.basic_blocks[self.bb_index].instrs.push(instr);
     }
 
-    pub fn setup_arguments(&mut self, function_index: CodeFuncIdx, local_count: u32, types: &TypeList, function_list: &FunctionList, locals: &[(u32, Type)]) {
-        if self.basic_blocks.is_empty() {
-            self.basic_blocks.push(BasicBlock::new(function_index, 0));
+    pub fn next_basic_block(&mut self) {
+        self.bb_index = self.allocate_block();
+    }
 
-            self.push_instr(Instr::Comment(format!("Push frame {}", local_count)));
-            self.push_instr(Instr::PushFrame(local_count));
-        } else {
-            panic!()
-        }
+    pub fn mark_unreachable(&mut self) {
+        self.reachable[self.bb_index] = false;
+    }
 
-        let ty = function_list.get_function_type(function_index, types);
+    pub fn reachable(&self) -> bool {
+        self.reachable[self.bb_index]
+    }
+
+    pub fn setup_arguments(&mut self, local_count: u32, types: &TypeList, function_list: &FunctionList, locals: &[(u32, Type)]) {
+        self.push_instr(Instr::Comment(format!("Push frame {}", local_count)));
+        self.push_instr(Instr::PushFrame(local_count));
+
+        let ty = function_list.get_function_type(self.func_idx, types);
 
         for (param_idx, param) in ty.params.iter().enumerate() {
             self.push_instr(Instr::Comment(format!("#   Parameter {}", param_idx)));
@@ -954,8 +1345,10 @@ impl FuncBodyStream {
         let areg = Register::Work(0);
 
         self.push_instr(Instr::PopI32Into(dreg));
+        self.op_stack.pop_i32();
         self.push_instr(Instr::PopI32Into(areg));
-        self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
         self.push_instr(Instr::SetMemPtr(areg));
 
         self.push_instr(Instr::StoreI32(dreg, memarg.align));
@@ -966,8 +1359,10 @@ impl FuncBodyStream {
         let areg = Register::Work(0);
 
         self.push_instr(Instr::PopI32Into(dreg));
+        self.op_stack.pop_i32();
         self.push_instr(Instr::PopI32Into(areg));
-        self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
         self.push_instr(Instr::SetMemPtr(areg));
 
         self.push_instr(Instr::StoreI32_8(dreg, memarg.align));
@@ -978,45 +1373,81 @@ impl FuncBodyStream {
         let areg = Register::Work(0);
 
         self.push_instr(Instr::PopI32Into(dreg));
+        self.op_stack.pop_i32();
         self.push_instr(Instr::PopI32Into(areg));
-        self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
         self.push_instr(Instr::SetMemPtr(areg));
 
         self.push_instr(Instr::StoreI32_16(dreg, memarg.align));
     }
 
-
-    pub fn load_i32(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+    pub fn load_i32_sized<I>(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList, instr: I)
+        where I: FnOnce(Register, u8) -> Instr,
+    {
         let reg = Register::Work(0);
 
         self.push_instr(Instr::PopI32Into(reg));
-        self.push_instr(Instr::AddI32Const(reg, memarg.offset as i32));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
         self.push_instr(Instr::SetMemPtr(reg));
 
-        self.push_instr(Instr::LoadI32(reg, memarg.align));
+        self.push_instr(instr(reg, memarg.align));
         self.push_instr(Instr::PushI32From(reg));
+        self.op_stack.push_i32();
+    }
+
+    pub fn load_i64_sized_u<I>(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList, instr: I)
+        where I: FnOnce(Register, u8) -> Instr,
+    {
+        let reg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(reg));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(reg));
+
+        self.push_instr(Instr::SetConst(reg.as_hi(), 0));
+        self.push_instr(instr(reg, memarg.align));
+        self.push_instr(Instr::PushI64From(reg));
+        self.op_stack.push_i64();
+    }
+
+    pub fn load_i64_sized_s<I>(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList, instr: I)
+        where I: FnOnce(Register, u8) -> Instr,
+    {
+        let reg = Register::Work(0);
+
+        self.push_instr(Instr::PopI32Into(reg));
+        self.op_stack.pop_i32();
+        self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
+        self.push_instr(Instr::SetMemPtr(reg));
+
+        self.push_instr(instr(reg, memarg.align));
+        self.push_instr(Instr::I64ExtendI32S { dst: reg, src: reg });
+        self.push_instr(Instr::PushI64From(reg));
+        self.op_stack.push_i64();
+    }
+
+
+    pub fn load_i32(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        self.load_i32_sized(memarg, memory_list, Instr::LoadI32)
     }
 
     pub fn load_i32_8u(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
-        let reg = Register::Work(0);
+        self.load_i32_sized(memarg, memory_list, Instr::LoadI32_8U)
+    }
 
-        self.push_instr(Instr::PopI32Into(reg));
-        self.push_instr(Instr::AddI32Const(reg, memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(reg));
-
-        self.push_instr(Instr::LoadI32_8U(reg, memarg.align));
-        self.push_instr(Instr::PushI32From(reg));
+    pub fn load_i32_8s(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        self.load_i32_sized(memarg, memory_list, Instr::LoadI32_8S)
     }
 
     pub fn load_i32_16u(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
-        let reg = Register::Work(0);
+        self.load_i32_sized(memarg, memory_list, Instr::LoadI32_16U)
+    }
 
-        self.push_instr(Instr::PopI32Into(reg));
-        self.push_instr(Instr::AddI32Const(reg, memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(reg));
-
-        self.push_instr(Instr::LoadI32_16U(reg, memarg.align));
-        self.push_instr(Instr::PushI32From(reg));
+    pub fn load_i32_16s(&mut self, memarg: MemoryImmediate, memory_list: &MemoryList) {
+        self.load_i32_sized(memarg, memory_list, Instr::LoadI32_16S)
     }
 
 
@@ -1028,6 +1459,7 @@ impl FuncBodyStream {
         let ty = get_local_ty(locals, local_index);
 
         self.push_instr(Instr::pop_into(reg, ty));
+        self.op_stack.pop_ty(ty);
         self.push_instr(Instr::store_local(reg, ty));
     }
 
@@ -1037,48 +1469,41 @@ impl FuncBodyStream {
     /// Pops values from the stack into the parameter registers in the expected order.
     /// Pushes the return address to the stack.
     /// Branches to the callee
-    pub fn static_call(&mut self, this_func_index: CodeFuncIdx, function_index: CodeFuncIdx, types: &TypeList, function_list: &FunctionList) {
+    pub fn static_call(&mut self, function_index: CodeFuncIdx, types: &TypeList, function_list: &FunctionList) {
         if USE_GRID_CALL {
             // Pop values from the stack to use as the arguments
             let ty = function_list.get_function_type(function_index, types);
-            for (i, param) in ty.params.iter().enumerate() {
-                match param {
-                    Type::I32 => {
-                        self.push_instr(Instr::PopI32Into(Register::Param(ty.params.len() as u32 - 1 - i as u32)));
-                    }
-                    _ => self.push_instr(Instr::PopValueInto(Register::Param(ty.params.len() as u32 - 1 - i as u32))),
-                }
+            for (i, param) in ty.params.iter().enumerate().rev() {
+                self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
+                self.op_stack.pop_ty(*param);
             }
 
             // Push return address
             self.push_instr(Instr::Comment("  Push return address".to_string()));
-            self.push_instr(Instr::PushReturnAddress(Label::new(this_func_index, self.basic_blocks.len())));
+            self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
 
             // Jump to function
-            self.push_instr(Instr::Branch(Label::new(function_index, 0)));
+            self.push_instr(Instr::RawBranch(Label::new(function_index, 0)));
         } else {
             todo!()
         }
     }
 
-    pub fn dyn_call(&mut self, this_func_index: CodeFuncIdx, table_index: u32, ty: &FuncType) {
+    pub fn dyn_call(&mut self, table_index: u32, ty: &FuncType) {
         if USE_GRID_CALL {
             // Pop function index
-            self.push_instr(Instr::PopValueInto(Register::Work(0)));
+            self.push_instr(Instr::PopI32Into(Register::Work(0)));
+            self.op_stack.pop_i32();
 
             // Pop values from the stack to use as the arguments
-            for (i, param) in ty.params.iter().enumerate() {
-                match param {
-                    Type::I32 => {
-                        self.push_instr(Instr::PopI32Into(Register::Param(ty.params.len() as u32 - 1 - i as u32)));
-                    }
-                    _ => self.push_instr(Instr::PopValueInto(Register::Param(ty.params.len() as u32 - 1 - i as u32)))
-                }
+            for (i, param) in ty.params.iter().enumerate().rev() {
+                self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
+                self.op_stack.pop_ty(*param);
             }
 
             // Push return address
             self.push_instr(Instr::Comment("  Push return address".to_string()));
-            self.push_instr(Instr::PushReturnAddress(Label::new(this_func_index, self.basic_blocks.len())));
+            self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
 
             // Jump to function
             self.push_instr(Instr::DynBranch(Register::Work(0), Some(table_index)));
@@ -1087,36 +1512,75 @@ impl FuncBodyStream {
         }
     }
 
+    pub fn get_target(&self, relative_depth: u32) -> BranchTarget {
+        let flow_stack = self.flow_stack.clone();
+        let entry = &self.flow_stack.0[self.flow_stack.0.len() - 1 - relative_depth as usize];
+        let to_pop = self.op_stack.0.len() - entry.target_tys.len() - entry.stack_size;
+        BranchTarget {
+            label: entry.label.clone().unwrap(),
+            to_pop,
+            ty: entry.target_tys.clone(),
+        }
+    }
 
-    pub fn visit_operator(&mut self, o: Operator, local_count: u32, func_idx: CodeFuncIdx, types: &TypeList, function_list: &FunctionList, memory_list: &MemoryList, global_list: &GlobalList, branches: Option<&(Vec<Label>, Option<Label>)>, locals: &[(u32, Type)]) {
+    fn allocate_block(&mut self) -> usize {
+        let idx = self.basic_blocks.len();
+        self.basic_blocks.push(BasicBlock::new(self.func_idx, idx));
+        self.reachable.push(true);
+        idx
+    }
+
+    pub fn visit_operator(&mut self, o: Operator, local_count: u32, types: &TypeList, function_list: &FunctionList, memory_list: &MemoryList, global_list: &GlobalList, locals: &[(u32, Type)], imports: &ImportList) {
         if self.basic_blocks.is_empty() {
-            self.basic_blocks.push(BasicBlock::new(func_idx, 0));
+            self.next_basic_block();
         }
 
+        assert_eq!(self.depth + 1, self.flow_stack.0.len());
+
         self.push_instr(Instr::Comment(format!("{:?}", o)));
+
+        println!("{:?}", o);
+
+        if !self.reachable() && !matches!(o, If { .. } | Else { .. } | End | Block { .. } | Loop { .. }) {
+            return;
+        }
 
         use Operator::*;
         match o {
             Call { function_index } => { 
                 let function_index = CodeFuncIdx(function_index);
 
-                self.push_instr(Instr::Comment(format!("#   wasm:{}", get_entry_point(function_index))));
+                if imports.is_named_func(function_index, "turtle_x") {
+                    self.op_stack.pop_i32();
+                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::X))
+                } else if imports.is_named_func(function_index, "turtle_y") {
+                    self.op_stack.pop_i32();
+                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::Y))
+                } else if imports.is_named_func(function_index, "turtle_z") {
+                    self.op_stack.pop_i32();
+                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::Z))
+                } else if imports.is_named_func(function_index, "turtle_set") {
+                    self.op_stack.pop_i32();
+                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                    self.push_instr(Instr::SetTurtleBlock(Register::Work(0)));
+                } else if imports.is_named_func(function_index, "turtle_get") {
+                    self.push_instr(Instr::TurtleGet(Register::Work(0)));
+                    self.push_instr(Instr::PushI32From(Register::Work(0)));
+                    self.op_stack.push_i32();
+                } else {
+                    self.push_instr(Instr::Comment(format!("#   wasm:{}", get_entry_point(function_index))));
 
-                self.static_call(func_idx, function_index, types, function_list);
+                    self.static_call(function_index, types, function_list);
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                    self.next_basic_block();
 
-                let f = function_list.get_function_type(function_index, types);
-                assert!(f.returns.len() <= 1);
-
-                if f.returns.len() == 1 {
-                    match f.returns[0] {
-                        Type::I32 => {
-                            // TODO:
-                            // self.push_instr(r#"tellraw @a [{"text":"return val is "},{"score":{"name":"%work%1%lo","objective":"reg"}}]"#.to_string());
-                            self.push_instr(Instr::PushI32From(Register::Return));
-                        }
-                        _ => todo!(),
+                    let f = function_list.get_function_type(function_index, types);
+                    for (idx, ty) in f.returns.iter().enumerate() {
+                        self.push_instr(Instr::push_from(Register::Return(idx as u32), *ty));
+                        self.op_stack.push_ty(*ty);
                     }
                 }
             }
@@ -1128,25 +1592,19 @@ impl FuncBodyStream {
                     unreachable!()
                 };
 
-                self.dyn_call(func_idx, table_index, ty);
+                self.dyn_call(table_index, ty);
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
-                assert!(ty.returns.len() <= 1);
+                self.next_basic_block();
 
-                if ty.returns.len() == 1 {
-                    match ty.returns[0] {
-                        Type::I32 => {
-                            // TODO:
-                            // self.push_instr(r#"tellraw @a [{"text":"return val is "},{"score":{"name":"%work%1%lo","objective":"reg"}}]"#.to_string());
-                            self.push_instr(Instr::PushI32From(Register::Return));
-                        }
-                        _ => todo!(),
-                    }
+                for (idx, ty) in ty.returns.iter().enumerate() {
+                    self.push_instr(Instr::push_from(Register::Return(idx as u32), *ty));
+                    self.op_stack.push_ty(*ty);
                 }
 
                 //self.basic_blocks.push(BasicBlock::new(self.basic_blocks.len()));
             }
             Return => {
+
                 /*
                 for l in 0..local_count {
                     let reg = Register::Work(l);
@@ -1165,31 +1623,7 @@ impl FuncBodyStream {
                 }
                 */
 
-                self.push_instr(Instr::Comment(" Pop frame".to_string()));
-                self.push_instr(Instr::PopFrame(local_count));
-
-                // Save return value so we can get to the 
-                // return address
-                let f = function_list.get_function_type(func_idx, types);
-                self.push_instr(Instr::Comment(" Save return value".to_string()));
-                assert!(f.returns.len() <= 1);
-
-                if f.returns.len() == 1 {
-                    match f.returns[0] {
-                        Type::I32 => {
-                            self.push_instr(Instr::PopI32Into(Register::Return));
-                        }
-                        ty => todo!("{:?}", ty),
-                    }
-                }
-
-                self.push_instr(Instr::Comment(" Pop return address".to_string()));
-                // Pop return address
-                let reg = Register::Work(0);
-                self.push_instr(Instr::PopI32Into(reg));
-                self.push_instr(Instr::DynBranch(reg, None));
-
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                self.visit_operator(Operator::Br { relative_depth: self.depth as u32 }, local_count, types, function_list, memory_list, global_list, locals, imports);
             }
 
             GlobalGet { global_index } => { 
@@ -1201,6 +1635,7 @@ impl FuncBodyStream {
 
                 self.push_instr(Instr::load_global(reg, ty));
                 self.push_instr(Instr::push_from(reg, ty));
+                self.op_stack.push_ty(ty);
             }
             GlobalSet { global_index } => {
                 let reg = Register::Work(0);
@@ -1210,6 +1645,7 @@ impl FuncBodyStream {
                 self.push_instr(Instr::SetGlobalPtr(global_index));
 
                 self.push_instr(Instr::pop_into(reg, ty));
+                self.op_stack.pop_ty(ty);
 
                 self.push_instr(Instr::store_global(reg, ty));
             }
@@ -1225,13 +1661,16 @@ impl FuncBodyStream {
 
                 self.push_instr(Instr::load_local(reg, ty));
                 self.push_instr(Instr::push_from(reg, ty));
+                self.op_stack.push_ty(ty);
             }
 
             I64Const { value } => {
                 self.push_instr(Instr::PushI64Const(value));
+                self.op_stack.push_i64();
             }
             I32Const { value } => {
                 self.push_instr(Instr::PushI32Const(value));
+                self.op_stack.push_i32();
             }
 
             I32Store { memarg } => {
@@ -1249,8 +1688,14 @@ impl FuncBodyStream {
             I32Load8U { memarg } => {
                 self.load_i32_8u(memarg, memory_list);
             }
+            I32Load8S { memarg } => {
+                self.load_i32_8s(memarg, memory_list);
+            }
             I32Load16U { memarg } => {
                 self.load_i32_16u(memarg, memory_list);
+            }
+            I32Load16S { memarg } => {
+                self.load_i32_16s(memarg, memory_list);
             }
             I64Store { memarg } => {
                 let dreg_hi = Register::Work(2);
@@ -1258,12 +1703,14 @@ impl FuncBodyStream {
                 let areg = Register::Work(0);
 
                 self.push_instr(Instr::PopI64IntoSplit { hi: dreg_hi, lo: dreg_lo });
+                self.op_stack.pop_i64();
 
                 self.push_instr(Instr::PopI32Into(areg));
-                self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+                self.op_stack.pop_i32();
+                self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
                 self.push_instr(Instr::SetMemPtr(areg));
                 self.push_instr(Instr::StoreI32(dreg_lo, memarg.align));
-                self.push_instr(Instr::AddI32Const(areg, 4));
+                self.push_instr(Instr::AddI32Const(areg.as_lo(), 4));
                 self.push_instr(Instr::SetMemPtr(areg));
                 self.push_instr(Instr::StoreI32(dreg_hi, memarg.align));
             }
@@ -1274,28 +1721,196 @@ impl FuncBodyStream {
                 let dreg_hi = Register::Work(2);
 
                 self.push_instr(Instr::PopI32Into(areg));
+                self.op_stack.pop_i32();
 
-                self.push_instr(Instr::AddI32Const(areg, memarg.offset as i32));
+                self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
                 self.push_instr(Instr::SetMemPtr(areg));
                 self.push_instr(Instr::LoadI32(dreg_lo, memarg.align));
-                self.push_instr(Instr::AddI32Const(areg, 4));
+                self.push_instr(Instr::AddI32Const(areg.as_lo(), 4));
                 self.push_instr(Instr::SetMemPtr(areg));
                 self.push_instr(Instr::LoadI32(dreg_hi, memarg.align));
 
                 self.push_instr(Instr::PushI64FromSplit { lo: dreg_lo, hi: dreg_hi });
+                self.op_stack.push_i64();
+            }
+            I64Load8U { memarg } => {
+                self.load_i64_sized_u(memarg, memory_list, Instr::LoadI32_8U);
+            }
+            I64Load16U { memarg } => {
+                self.load_i64_sized_u(memarg, memory_list, Instr::LoadI32_16U);
+            }
+            I64Load32U { memarg } => {
+                self.load_i64_sized_u(memarg, memory_list, Instr::LoadI32);
+            }
+            I64Load8S { memarg } => {
+                self.load_i64_sized_s(memarg, memory_list, Instr::LoadI32_8S);
+            }
+            I64Load16S { memarg } => {
+                self.load_i64_sized_s(memarg, memory_list, Instr::LoadI32_16S);
+            }
+            I64Load32S { memarg } => {
+                self.load_i64_sized_s(memarg, memory_list, Instr::LoadI32);
+            }
+
+            MemoryGrow { mem, mem_byte } => {
+                println!("FIXME: MEMORY GROW");
             }
 
             End => {
-                if self.depth == 0 {
-                    self.visit_operator(Operator::Return, local_count, func_idx, types, function_list, memory_list, global_list, branches, locals)
+                let needs_else = self.flow_stack.0.last().unwrap().else_block.is_some();
+                if needs_else {
+                    self.visit_operator(Operator::Else, local_count, types, function_list, memory_list, global_list, locals, imports);
+                }
+
+                let entry = self.flow_stack.0.pop().unwrap();
+
+                let _label = entry.label.unwrap();
+
+                /*let (label, needs_block) = if let Some(label) = entry.label {
+                    (label, false)
                 } else {
-                    // Branch to next block
-                    self.push_instr(Instr::Branch(Label::new(func_idx, self.basic_blocks.len())));
+                    todo!()
+                    // FIXME: is it this one or the previous one?
+                    let label = entry.label.unwrap_or_else(|| Label::new(self.func_idx, self.basic_blocks.len()));
+                    (label, true)
+                };*/
 
-                    self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                if self.reachable() {
+                    for ty in entry.outputs.iter().rev().copied() {
+                        self.op_stack.pop_ty(ty);
+                    }
 
+                    assert_eq!(self.op_stack.0.len(), entry.stack_size);
+                } else {
+                    self.op_stack.0.truncate(entry.stack_size);
+                }
+
+                for ty in entry.outputs.iter().copied() {
+                    self.op_stack.push_ty(ty);
+                }
+
+                let target = BranchTarget {
+                    label: Label::new(self.func_idx, entry.next_block),
+                    to_pop: 0,
+                    ty: entry.target_tys,
+                };
+
+                self.push_instr(Instr::Branch(target));
+
+                self.bb_index = entry.next_block;
+
+                if self.depth == 0 {
+                    self.setup_epilogue(local_count, &entry.outputs);
+                } else {
                     self.depth -= 1;
                 }
+
+            }
+
+            I32Ctz => {
+                self.op_stack.pop_i32();
+                self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                self.push_instr(Instr::I32Ctz(Register::Work(0)));
+                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.op_stack.push_i32();
+            }
+            I64Ctz => {
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(Register::Work(0)));
+                self.push_instr(Instr::I64Ctz { dst: Register::Work(1), src: Register::Work(0) });
+                self.push_instr(Instr::PushI64From(Register::Work(1)));
+                self.op_stack.push_i64();
+            }
+
+            I64Add => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64Add { dst, lhs, rhs });
+                self.op_stack.push_i64();
+                self.push_instr(Instr::PushI64From(dst));
+            }
+            I64Sub => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                for i in Instr::i64_neg(rhs) {
+                    self.push_instr(i);
+                }
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64Add { dst, lhs, rhs });
+                self.op_stack.push_i64();
+                self.push_instr(Instr::PushI64From(dst));
+            }
+            I64Mul => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                for i in Instr::i64_mul(dst, lhs, rhs) {
+                    self.push_instr(i);
+                }
+                self.op_stack.push_i64();
+                self.push_instr(Instr::PushI64From(dst));
+            }
+            I64LtU => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64UComp { dst, lhs, op: Relation::LessThan, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+            I64LeU => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64UComp { dst, lhs, op: Relation::LessThanEq, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+
+            }
+            I64GtU => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64UComp { dst, lhs, op: Relation::GreaterThan, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+            I64GeU => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64UComp { dst, lhs, op: Relation::GreaterThanEq, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
             }
 
             I32Add => {
@@ -1340,53 +1955,200 @@ impl FuncBodyStream {
             I32ShrU => {
                 self.make_i32_binop("shru");
             }
+            I32ShrS => {
+                self.make_i32_binop("shrs");
+            }
 
             LocalTee { local_index } => {
                 let reg = Register::Work(0);
                 let ty = get_local_ty(locals, local_index);
 
                 self.push_instr(Instr::pop_into(reg, ty));
+                self.op_stack.pop_ty(ty);
                 self.push_instr(Instr::push_from(reg, ty));
+                self.op_stack.push_ty(ty);
                 self.push_instr(Instr::push_from(reg, ty));
+                self.op_stack.push_ty(ty);
 
-                self.visit_operator(Operator::LocalSet { local_index }, local_count, func_idx, types, function_list, memory_list, global_list, branches, locals)
+                self.visit_operator(Operator::LocalSet { local_index }, local_count, types, function_list, memory_list, global_list, locals, imports)
             }
             Drop => {
                 self.push_instr(Instr::Drop);
+                self.op_stack.pop_value();
             }
             Select => {
                 let cond_reg = Register::Work(2);
                 self.push_instr(Instr::PopI32Into(cond_reg));
+                self.op_stack.pop_i32();
 
+
+                let false_ty = self.op_stack.pop_value();
                 let false_reg = Register::Work(1);
-                self.push_instr(Instr::PopValueInto(false_reg));
+                self.push_instr(Instr::pop_into(false_reg, false_ty));
 
+                let true_ty = self.op_stack.pop_value();
                 let true_reg = Register::Work(0);
-                self.push_instr(Instr::PopValueInto(true_reg));
+                self.push_instr(Instr::pop_into(true_reg, true_ty));
 
-                self.push_instr(Instr::Select { dst_reg: true_reg, true_reg, false_reg, cond_reg });
+                if false_ty != true_ty {
+                    todo!("{:?} {:?}", false_ty, true_ty)
+                }
 
-                self.push_instr(Instr::PushValueFrom(true_reg));
+                match true_ty {
+                    Type::I32 => {
+                        self.push_instr(Instr::SelectI32 { dst_reg: true_reg, true_reg, false_reg, cond_reg });
+                    }
+                    _ => todo!("{:?}", true_ty)
+                }
+
+
+                self.push_instr(Instr::push_from(true_reg, true_ty));
+                // TODO: can they be different types?
+                self.op_stack.push_ty(true_ty);
             }
             Block { ty } => {
-                if ty != TypeOrFuncType::Type(Type::EmptyBlockType) {
-                    todo!("Block {:?}", ty);
+                let inputs = get_input_tys(ty, types);
+                let outputs = get_output_tys(ty, types);
+
+                println!("Before starting block: {:?}", self.op_stack);
+
+                let target_tys = outputs.clone();
+
+                for ty in inputs.iter().rev().copied() {
+                    self.op_stack.pop_ty(ty);
+                }
+
+                let next_block = self.allocate_block();
+
+                let entry = ControlFlowEntry {
+                    label: Some(Label::new(self.func_idx, next_block)),
+                    stack_size: self.op_stack.0.len(),
+                    target_tys,
+                    outputs,
+                    else_block: None,
+                    next_block,
+                };
+                self.flow_stack.0.push(entry);
+
+                for ty in inputs.iter().copied() {
+                    self.op_stack.push_ty(ty);
                 }
 
                 self.depth += 1;
+            }
+            If { ty } => {
+                let inputs = get_input_tys(ty, types);
+                let outputs = get_output_tys(ty, types);
+
+                let target_tys = outputs.clone();
+
+                // Condition
+                let reg = Register::Work(0);
+                self.push_instr(Instr::PopI32Into(reg));
+                self.op_stack.pop_i32();
+
+                for ty in inputs.iter().rev().copied() {
+                    self.op_stack.pop_ty(ty);
+                }
+
+                let then_block = self.allocate_block();
+                let else_block = self.allocate_block();
+                let next_block = self.allocate_block();
+
+                let then_target = BranchTarget {
+                    label: Label::new(self.func_idx, then_block),
+                    to_pop: 0,
+                    ty: inputs.clone(),
+                };
+
+                let else_target = BranchTarget {
+                    label: Label::new(self.func_idx, else_block),
+                    to_pop: 0,
+                    ty: inputs.clone(),
+                };
+
+                self.push_instr(Instr::BranchIf { t_name: then_target, f_name: else_target, cond: Register::Work(0) });
+
+                let entry = ControlFlowEntry {
+                    label: Some(Label::new(self.func_idx, next_block)),
+                    stack_size: self.op_stack.0.len(),
+                    target_tys,
+                    outputs,
+                    else_block: Some((else_block, inputs.clone())),
+                    next_block,
+                };
+                self.flow_stack.0.push(entry);
+
+                for ty in inputs.iter().copied() {
+                    self.op_stack.push_ty(ty);
+                }
+
+                self.depth += 1;
+
+                self.bb_index = then_block;
+            }
+            Else => {
+                let entry = self.flow_stack.0.last_mut().unwrap();
+
+                //let label = entry.label.as_ref().unwrap();
+                let (else_block, else_ty) = entry.else_block.take().unwrap();
+
+                // TODO: ???
+                if self.reachable[self.bb_index] {
+                    for ty in entry.outputs.iter().rev().copied() {
+                        self.op_stack.pop_ty(ty);
+                    }
+
+                    assert_eq!(self.op_stack.0.len(), entry.stack_size);
+                } else {
+                    self.op_stack.0.truncate(entry.stack_size);
+                }
+                
+
+                // Exit from the if-part of the statement
+                let target = BranchTarget {
+                    label: Label::new(self.func_idx, entry.next_block),
+                    to_pop: 0,
+                    ty: entry.target_tys.clone(),
+                };
+
+                self.push_instr(Instr::Branch(target));
+
+                self.bb_index = else_block;
+
+                // Enter the else-block with the given param types
+                for ty in else_ty.iter() {
+                    self.op_stack.push_ty(*ty);
+                }
             }
 
             I32Eqz => {
                 let val = Register::Work(0);
 
                 self.push_instr(Instr::PopI32Into(val));
+                self.op_stack.pop_i32();
 
                 let cond = Register::Work(1);
 
                 self.push_instr(Instr::I32Eqz { val, cond });
 
                 self.push_instr(Instr::PushI32From(cond));
+                self.op_stack.push_i32();
             }
+            I64Eqz => {
+                let val = Register::Work(0);
+
+                self.push_instr(Instr::PopI64Into(val));
+                self.op_stack.pop_i64();
+
+                let cond = Register::Work(1);
+
+                self.push_instr(Instr::I64Eqz { val, cond });
+
+                self.push_instr(Instr::PushI32From(cond));
+                self.op_stack.push_i32();
+            }
+
             I32GtS => {
                 self.make_i32_binop("gts");
             }
@@ -1415,73 +2177,106 @@ impl FuncBodyStream {
             I64ExtendI32S => {
                 let reg = Register::Work(0);
 
+                self.op_stack.pop_i32();
                 self.push_instr(Instr::pop_into(reg, Type::I32));
                 self.push_instr(Instr::I64ExtendI32S { dst: reg, src: reg });
                 self.push_instr(Instr::push_from(reg, Type::I64));
+                self.op_stack.push_i64();
+            }
+            I64ExtendI32U => {
+                let reg = Register::Work(0);
+                
+                self.op_stack.pop_i32();
+                self.push_instr(Instr::pop_into(reg, Type::I32));
+                self.push_instr(Instr::I64ExtendI32U(reg));
+                self.push_instr(Instr::push_from(reg, Type::I64));
+                self.op_stack.push_i64();
             }
 
             Loop { ty } => {
-                // Branch to next block
-                self.push_instr(Instr::Branch(Label::new(func_idx, self.basic_blocks.len())));
+                let target_tys = get_input_tys(ty, types);
+                let outputs = get_output_tys(ty, types);
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
-
-                if ty != TypeOrFuncType::Type(Type::EmptyBlockType) {
-                    todo!("Block {:?}", ty);
+                for ty in target_tys.iter().rev().copied() {
+                    self.op_stack.pop_ty(ty);
                 }
+
+                let next_block = self.allocate_block();
+
+                self.flow_stack.0.push(ControlFlowEntry {
+                    label: Some(Label::new(self.func_idx, self.basic_blocks.len())),
+                    stack_size: self.op_stack.0.len(),
+                    target_tys: target_tys.clone(),
+                    else_block: None,
+                    next_block,
+                    outputs,
+                });
+
+                for ty in target_tys.iter().copied() {
+                    self.op_stack.push_ty(ty);
+                }
+
+                // Branch to next block
+                self.push_instr(Instr::RawBranch(Label::new(self.func_idx, self.basic_blocks.len())));
+
+                self.next_basic_block();
 
                 self.depth += 1;
             }
-            Br { .. } => {
-                let (target, o) = branches.unwrap();
-                assert!(o.is_none());
-                assert_eq!(target.len(), 1);
-                let target = &target[0];
+            Br { relative_depth } => {
+                let target = self.get_target(relative_depth);
 
-                self.push_instr(Instr::Branch(Label::new(func_idx, target.idx)));
+                self.push_instr(Instr::Branch(target));
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                self.next_basic_block();
+                self.mark_unreachable();
             }
-            BrIf { .. } => {
+            BrIf { relative_depth } => {
                 let reg = Register::Work(0);
 
                 self.push_instr(Instr::PopI32Into(reg));
+                self.op_stack.pop_i32();
 
-                let (targets, d) = branches.unwrap();
-                assert!(d.is_none());
-                assert_eq!(targets.len(), 2);
-
-                let t_target = &targets[0];
-                let f_target = &targets[1];
-
-                let t_name = Label::new(func_idx, t_target.idx);
-                let f_name = Label::new(func_idx, f_target.idx);
+                let t_name = self.get_target(relative_depth);
+                let next_block = self.allocate_block();
+                let f_name = BranchTarget {
+                    label: self.basic_blocks[next_block].label.clone(),
+                    to_pop: 0,
+                    ty: Box::new([]),
+                };
 
                 self.push_instr(Instr::BranchIf { t_name, f_name, cond: reg });
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                self.bb_index = next_block;
             }
-            BrTable { .. } => {
+            BrTable { table } => {
                 let reg = Register::Work(0);
 
+                self.op_stack.pop_i32();
                 self.push_instr(Instr::PopI32Into(reg));
 
-                let (mut targets, mut default) = branches.unwrap().clone();
+                let mut default = None;
+                let mut targets = Vec::new();
 
-                for t in targets.iter_mut() {
-                    t.func_idx = func_idx;
-                }
-                if let Some(d) = &mut default {
-                    d.func_idx = func_idx;
+                for (rel_depth, is_default) in table.targets().map(|t| t.unwrap()) {
+                    let target = self.get_target(rel_depth);
+                    if is_default {
+                        assert!(default.is_none());
+                        default = Some(target);
+                    } else {
+                        targets.push(target);
+                    }
                 }
 
                 self.push_instr(Instr::BranchTable { reg, targets, default });
 
-                self.basic_blocks.push(BasicBlock::new(func_idx, self.basic_blocks.len()));
+                self.next_basic_block();
+                self.mark_unreachable();
             }
             Nop => {}
             Unreachable => {
-                println!("TODO: Unreachable")
+                println!("TODO: Unreachable");
+                self.mark_unreachable();
             }
 
             _ => todo!("{:?}", o),
@@ -1656,21 +2451,8 @@ impl<'a> GlobalList<'a> {
         cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}} replace", self.globals.len()));
 
         for (i, global) in self.globals.iter().enumerate() {
-            let op = global.init_expr.get_operators_reader()
-                .into_iter()
-                .map(|o| o.unwrap())
-                .collect::<Vec<_>>();
-
-            assert_eq!(op.len(), 2);
-
-            assert!(matches!(op[1], Operator::End));
-
-            match op[0] {
-                Operator::I32Const { value } => {
-                    cmds.push(format!("data modify block {} 0 3 RecordItem.tag.Memory set value {}", i, value));
-                }
-                _ => todo!("{:?}", op)
-            }
+            let value = eval_init_expr(global.init_expr);
+            cmds.push(format!("data modify block {} 0 3 RecordItem.tag.Memory set value {}", i, value));
         }
 
         cmds
@@ -1694,6 +2476,24 @@ impl<'a> ImportList<'a> {
         self.imports.iter()
             .filter(|i| matches!(i.ty, ImportSectionEntryType::Function(_)))
             .count()
+    }
+
+    pub fn is_named_func(&self, code: CodeFuncIdx, name: &str) -> bool {
+        let func = self.imports.iter().filter(|i| {
+            matches!(i.ty, ImportSectionEntryType::Function(_))
+        }).nth(code.0 as usize);
+
+        if let Some(func) = func {
+            if func.module == "env" {
+                if let Some(field) = func.field {
+                    if field == name {
+                        return true;  
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 
@@ -1758,21 +2558,6 @@ fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>, wasm_f
     }
 }
 
-struct TableList {
-    tables: Vec<TableType>,
-}
-
-impl TableList {
-    pub fn new() -> Self {
-        TableList { tables: Vec::new() }
-    }
-
-    pub fn add_table(&mut self, ty: TableType) {
-        dbg!(&ty);
-        self.tables.push(ty);
-    }
-}
-
 struct WasmFile<'a> {
     types: TypeList<'a>,
     globals: GlobalList<'a>,
@@ -1781,6 +2566,7 @@ struct WasmFile<'a> {
     imports: ImportList<'a>,
     data: DataList<'a>,
     tables: TableList,
+    elements: ElementList<'a>,
     functions: FunctionList,
 }
 
@@ -1794,7 +2580,7 @@ pub fn run(run_options: &RunOptions) {
 
     let (basic_blocks, wasm_file) = compile(&file);
 
-    let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data, true);
+    let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
@@ -1804,9 +2590,9 @@ pub fn run(run_options: &RunOptions) {
 
     save_datapack(folder_path, mc_functions.clone(), &wasm_file);
 
-    let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
+    //let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
-    println!("Returned with {:?}", result);
+    //println!("Returned with {:?}", result);
 }
 
 fn run_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
@@ -1817,7 +2603,7 @@ fn run_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory:
     cmd
 }
 
-fn setup_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
+fn prepare_interp(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList) -> Interpreter {
     let mut funcs = mc_functions.iter()
         .map(|(n, c)| {
             // FIXME: Namespace
@@ -1882,14 +2668,24 @@ fn setup_commands(mc_functions: &[(String, String)], globals: &GlobalList, memor
 
     i.run_to_end().unwrap();
 
+    i
+}
+
+fn set_interp_pos(interp: &mut Interpreter, mc_functions: &[(String, String)], name: &str) {
     let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
-            n == "_start"
+            n == name
         }).unwrap_or_else(|| {
-            eprintln!("Failed to find {:?}", "_start");
+            eprintln!("Failed to find {:?}", name);
             panic!();
         }).0;
 
-    i.set_pos(idx);
+    interp.set_pos(idx);
+}
+
+fn setup_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
+    let mut i = prepare_interp(mc_functions, globals, memory);
+
+    set_interp_pos(&mut i, mc_functions, "_start");
 
     i
 }
@@ -1928,21 +2724,10 @@ impl<'a> DataList<'a> {
                 DataKind::Active { memory_index, init_expr } => {
                     assert_eq!(memory_index, 0);
 
-                    let mut rdr = init_expr.get_operators_reader()
-                        .into_iter()
-                        .map(|r| r.unwrap());
-                    
-                    let offset = if let Operator::I32Const { value } = rdr.next().unwrap() {
-                        value
-                    } else {
-                        panic!()
-                    };
-                    
+                    let offset = eval_init_expr(init_expr);
+
                     assert_eq!(offset % 4, 0);
 
-                    assert!(matches!(rdr.next().unwrap(), Operator::End));
-                    assert!(rdr.next().is_none());
-                    
                     // FIXME:
                     let mut data = d.data.to_owned();
                     while data.len() % 4 != 0 {
@@ -1950,7 +2735,7 @@ impl<'a> DataList<'a> {
                     }
 
                     let mut ptr: usize = offset.try_into().unwrap();
-                    for word in d.data.chunks_exact(4) {
+                    for word in data.chunks_exact(4) {
                         let word = word.try_into().unwrap();
                         let word = i32::from_le_bytes(word);
 
@@ -1967,6 +2752,34 @@ impl<'a> DataList<'a> {
     }
 }
 
+struct TableList {
+    tables: Vec<TableType>,
+}
+
+impl TableList {
+    pub fn new() -> Self {
+        TableList { tables: Vec::new() }
+    }
+
+    pub fn add_table(&mut self, ty: TableType) {
+        self.tables.push(ty);
+    }
+}
+
+struct ElementList<'a> {
+    elements: Vec<Element<'a>>,
+}
+
+impl<'a> ElementList<'a> {
+    pub fn new() -> Self {
+        ElementList { elements: Vec::new() }
+    }
+
+    pub fn add_element(&mut self, elem: Element<'a>) {
+        self.elements.push(elem);
+    }
+}
+
 fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     let mut types = TypeList::new();
     let mut globals = GlobalList::new();
@@ -1975,6 +2788,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     let mut imports = ImportList::new();
     let mut tables = TableList::new();
     let mut data = DataList::new();
+    let mut elements = ElementList::new();
 
     let mut func_reader = None;
 
@@ -2038,12 +2852,17 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
                     tables.add_table(table);
                 }
             }
+            Payload::ElementSection(e) => {
+                for elem in e {
+                    let elem = elem.unwrap();
+                    elements.add_element(elem);
+                }
+            }
             _other => {
                 println!("{:?}", _other);
             }
         }
     }
-
 
     let mut basic_blocks = Vec::new();
 
@@ -2105,6 +2924,9 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
                     basic_blocks.push(bb);
                    
                 }
+                Some("turtle_get") => {
+                    basic_blocks.push(BasicBlock::new(CodeFuncIdx(i as u32), 0));
+                }
                 field => todo!("{:?}", field),
             }
         } else {
@@ -2123,15 +2945,15 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
     for e in codes {
         println!("Doing function {}", func_idx.0);
 
+        let func_type = functions.get_function_type(func_idx, &types);
+
         let operators = e.get_operators_reader().unwrap()
             .into_iter()
             .map(|o| o.unwrap())
             .collect::<Vec<_>>();
         
-        let split_bb_info = split_bbs(&operators, func_idx);
-
         let mut locals = Vec::new();
-        for param in functions.get_function_type(func_idx, &types).params.iter() {
+        for param in func_type.params.iter() {
             locals.push((1, *param))
         }
 
@@ -2143,34 +2965,16 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
 
         let local_count = locals.iter().map(|(c, _)| *c).sum();
 
-        let mut s = FuncBodyStream::new();
+        let func_ty = TypeOrFuncType::FuncType(functions.functions[func_idx.0 as usize]);
 
-        s.setup_arguments(func_idx, local_count, &types, &functions, &locals);
+        let mut s = FuncBodyStream::new(func_ty, &types, func_idx);
+
+
+        s.setup_arguments(local_count, &types, &functions, &locals);
         for (idx, o) in operators.into_iter().enumerate() {
-            let labels = split_bb_info.branches.get(&idx);
-            s.visit_operator(o, local_count, func_idx, &types, &functions, &memory, &globals, labels, &locals);
+            s.visit_operator(o, local_count, &types, &functions, &memory, &globals, &locals, &imports);
         }
-
-        /*
-        for b in s.basic_blocks.iter() {
-            println!("{:?}", b.label);
-            for i in b.instrs.iter() {
-                println!("\t{}", i);
-            }
-        }
-        */
-
-        assert_eq!(s.basic_blocks.len(), split_bb_info.bb_count);
-
-        /*
-        println!("===== FUNC BODY =====");
-        for bb in s.basic_blocks.iter() {
-            println!("  --- {:?} ---", bb.label);
-            for i in bb.instrs.iter() {
-                println!("    {}", i);
-            }
-        }
-        */
+        assert!(s.op_stack.0.is_empty(), "{:?}", s.op_stack);
 
         for bb in s.basic_blocks {
             basic_blocks.push(bb);
@@ -2179,22 +2983,13 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
         func_idx.0 += 1;
     }
 
-    /*
-    for bb in basic_blocks.iter() {
-        for instr in bb.instrs.iter() {
-            println!("{:?}", instr)
-        }
-        println!();
-    }
-    */
-
-    let wasm_file = WasmFile { functions, memory, globals, exports, imports, types, tables, data };
+    let wasm_file = WasmFile { functions, memory, globals, exports, imports, types, tables, data, elements };
 
     (basic_blocks, wasm_file)
 }
 
-fn run_ir(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList) -> State {
-    let mut state = setup_state(basic_blocks, globals, memory, exports, data);
+fn run_ir(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+    let mut state = setup_state(basic_blocks, file);
 
     loop {
         if state.step() { break }
@@ -2205,46 +3000,68 @@ fn run_ir(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &Mem
     //state.registers.get(&Register::Return).unwrap().0
 }
 
-fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList) -> State {
-    let mut state = State::new(basic_blocks.to_owned(), globals, memory);
+fn eval_init_expr(expr: InitExpr<'_>) -> i32 {
+    let ops = expr.get_operators_reader().into_iter().map(|o| o.unwrap()).collect::<Vec<_>>();
 
-    for (i, global) in globals.globals.iter().enumerate() {
-        let op = global.init_expr.get_operators_reader()
-            .into_iter()
-            .map(|o| o.unwrap())
-            .collect::<Vec<_>>();
+    if let [Operator::I32Const { value }, Operator::End] = &ops[..] {
+        *value
+    } else {
+        todo!("{:?}", ops)
+    }
+}
 
-        assert_eq!(op.len(), 2);
+fn get_tables(file: &WasmFile, basic_blocks: &[BasicBlock<Instr>]) -> Vec<state::Table> {
+    let mut tables = Vec::new();
 
-        assert!(matches!(op[1], Operator::End));
+    for table in file.tables.tables.iter() {
+        if table.element_type != Type::FuncRef {
+            todo!()
+        }
 
-        match op[0] {
-            Operator::I32Const { value } => {
-                state.globals[i].0 = value;
+        tables.push(state::Table { elements: vec![None; table.limits.initial as usize] });
+    }
+
+    for elem in file.elements.elements.iter() {
+        match elem.kind {
+            ElementKind::Active { table_index, init_expr } => {
+                let offset = eval_init_expr(init_expr);
+                let items = elem.items.get_items_reader().unwrap().into_iter().map(|i| i.unwrap());
+
+                let table = &mut tables[table_index as usize];
+
+                for (idx, item) in items.enumerate() {
+                    match item {
+                        ElementItem::Null(ty) => todo!("{:?}", ty),
+                        ElementItem::Func(f) => {
+                            table.elements[offset as usize + idx] = Some(CodeFuncIdx(f));
+                        }
+                    }
+                }
             }
-            _ => todo!("{:?}", op)
+            _ => todo!()
         }
     }
 
-    for d in data.data.iter() {
+    tables
+}
+
+fn prepare_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+    let tables = get_tables(file, basic_blocks);
+
+    let mut state = State::new(basic_blocks.to_owned(), &file.globals, &file.memory, tables);
+
+    for (i, global) in file.globals.globals.iter().enumerate() {
+        state.globals[i].0 = eval_init_expr(global.init_expr);
+    }
+
+    for d in file.data.data.iter() {
         match d.kind {
             DataKind::Active { memory_index, init_expr } => {
                 assert_eq!(memory_index, 0);
 
-                let mut rdr = init_expr.get_operators_reader()
-                    .into_iter()
-                    .map(|r| r.unwrap());
-                
-                let offset: usize = if let Operator::I32Const { value } = rdr.next().unwrap() {
-                    value.try_into().unwrap()
-                } else {
-                    panic!()
-                };
+                let offset: usize = eval_init_expr(init_expr).try_into().unwrap();
                 
                 assert_eq!(offset % 4, 0);
-
-                assert!(matches!(rdr.next().unwrap(), Operator::End));
-                assert!(rdr.next().is_none());
 
                 let page = &mut state.memory[offset / 65536];
 
@@ -2254,10 +3071,27 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory:
         }
     }
 
+    state
+}
 
-    let idx = state.get_pc(&Label::new(exports.get_func("_start"), 0));
+fn set_state_pos(state: &mut State, exports: &ExportList, name: &str) {
+    let idx = state.get_pc(&Label::new(exports.get_func(name), 0));
 
     state.enter(idx);
+}
+
+fn block_pos_from_idx(idx: usize, redstone: bool) -> String {
+    let x = (idx as i32) % 48;
+    let y = if redstone { 1 } else { 0 };
+    let z = -1 - ((idx as i32) / 48);
+
+    format!("{} {} {}", x, y, z)
+}
+
+fn setup_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+    let mut state = prepare_state(basic_blocks, file);
+
+    set_state_pos(&mut state, &file.exports, "_start");
 
 
     /*state.call(state.get_pc(&Label::new(exports.get_func("__wasm_call_ctors"), 0)));
@@ -2270,12 +3104,11 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory:
 
 }
 
-fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &MemoryList, exports: &ExportList, data: &DataList, insert_sync: bool) -> Vec<(String, String)> {
+fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
     for bb in basic_blocks {
-
-        let mut new_block = bb.lower(globals, insert_sync);
+        let mut new_block = bb.lower(&file.globals, insert_sync);
         let name = get_block(&new_block.label);
 
         new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
@@ -2289,8 +3122,6 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
 
         mc_functions.push((name, contents));
     }
-
-    do_fixups(&mut mc_functions);
 
     let mut setup = "\
     # Set up scoreboard\n\
@@ -2338,19 +3169,19 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
     setup.push_str("fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
 
     setup.push_str("\n# Make memory\n");
-    for mem_cmd in memory.init() {
+    for mem_cmd in file.memory.init() {
         setup.push_str(&mem_cmd);
         setup.push('\n');
     }
 
     setup.push_str("\n# Init memory\n");
-    for data_cmd in data.init() {
+    for data_cmd in file.data.init() {
         setup.push_str(&data_cmd);
         setup.push('\n');
     }
 
     setup.push_str("\n# Make globals\n");
-    for global_cmd in globals.init() {
+    for global_cmd in file.globals.init() {
         setup.push_str(&global_cmd);
         setup.push('\n');
     }
@@ -2358,10 +3189,13 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
     if USE_GRID_CALL {
         setup.push_str("\n# Make commands\n");
         for (idx, (name, _)) in mc_functions.iter().enumerate() {
-            let cmd = format!("setblock {} 0 -1 minecraft:air replace", idx);
+            let lo_pos = block_pos_from_idx(idx, false);
+            let hi_pos = block_pos_from_idx(idx, true);
+            // FIXME: Pos
+            let cmd = format!("fill {} {} minecraft:air replace", lo_pos, hi_pos);
             setup.push_str(&cmd);
             setup.push('\n');
-            let cmd = format!("setblock {} 0 -1 minecraft:command_block{{Command:\"function wasm:{}\"}} replace", idx, name);
+            let cmd = format!("setblock {} minecraft:command_block{{Command:\"function wasm:{}\"}} replace", lo_pos, name);
             setup.push_str(&cmd);
             setup.push('\n');
         }
@@ -2371,8 +3205,10 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
 
     let mut dyn_branch = String::new();
     for (idx, (name, _)) in mc_functions.iter().enumerate() {
+        let pos = block_pos_from_idx(idx, true);
+
         // FIXME: Reg0
-        let b = format!("# wasm:{}\nexecute if score %work%0%lo reg matches {}..{} run setblock {} 1 -1 minecraft:redstone_block destroy\n", name, idx, idx, idx);
+        let b = format!("# wasm:{}\nexecute if score %work%0%lo reg matches {}..{} run setblock {} minecraft:redstone_block destroy\n", name, idx, idx, pos);
         dyn_branch.push_str(&b);
     }
 
@@ -2383,32 +3219,45 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
 
     mc_functions.push(("dyn_branch".to_string(), dyn_branch));
 
+    let tables = get_tables(file, basic_blocks);
+    for (idx, table) in tables.iter().enumerate() {
+        let dyn_branch = create_dyn_jumper(table);
+        mc_functions.push((format!("dyn_branch{}", idx), dyn_branch));
+    }
 
-    for export in exports.exports.iter() {
+    do_fixups(&mut mc_functions);
+
+    for export in file.exports.exports.iter() {
         if let ExternalKind::Function = export.kind {
             let index = CodeFuncIdx(export.index);
 
-            // FIXME: Pos
             let name = get_entry_point(index);
             let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
                 n == &name
             }).unwrap().0;
 
-            let mut f = FuncBodyStream::new();
+            let func_ty = file.functions.functions[index.0 as usize];
+
+            let mut f = FuncBodyStream::new(TypeOrFuncType::FuncType(func_ty), &file.types, index);
             f.basic_blocks.push(BasicBlock::new(CodeFuncIdx(0), 0));
             f.push_instr(Instr::PushI32Const(-1));
+
+            // FIXME:
             if export.field == "main" {
                 f.push_instr(Instr::PushI32Const(0));
+                f.push_instr(Instr::PopI32Into(Register::Param(0)));
                 f.push_instr(Instr::PushI32Const(0));
+                f.push_instr(Instr::PopI32Into(Register::Param(1)));
             }
 
-            assert_eq!(f.basic_blocks.len(), 1);
+            //assert_eq!(f.basic_blocks.len(), 1);
 
             let mut body = Vec::new();
             for i in f.basic_blocks[0].instrs.iter_mut() {
-                i.lower(&mut body, &globals);
+                i.lower(&mut body, &file.globals);
             }
-            body.push(format!("setblock {} 1 -1 minecraft:redstone_block destroy", idx));
+            let pos = block_pos_from_idx(idx, true);
+            body.push(format!("setblock {} minecraft:redstone_block destroy", pos));
 
             let content = body.join("\n");
 
@@ -2418,6 +3267,46 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], globals: &GlobalList, memory: &M
 
 
     mc_functions
+}
+
+fn create_dyn_jumper(table: &state::Table) -> String {
+    let mut dyn_branch = String::new();
+    for (idx, dest) in table.elements.iter().enumerate() {
+        if let Some(dest) = dest {
+            let label = get_block(&Label::new(*dest, 0));
+
+            // FIXME: Reg0
+            let b = format!("execute if score %work%0%lo reg matches {}..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy\n", idx, idx, label);
+            dyn_branch.push_str(&b);
+        }
+    }
+
+    // FIXME:
+    //let e = format!("execute unless score %work%0%lo reg matches 0..{} run ", mc_functions.len() - 1);
+    //dyn_branch.push_str(&e);
+    //dyn_branch.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
+
+    //mc_functions.push(("dyn_branch".to_string(), dyn_branch));
+
+    dyn_branch
+}
+
+fn get_entry_index(func: CodeFuncIdx, mc_functions: &[(String, String)]) -> usize {
+    let name = get_block(&Label::new(func, 0));
+    get_entry_index_named(&name, mc_functions)
+}
+
+fn get_entry_index_named(func: &str, mc_functions: &[(String, String)]) -> usize {
+    mc_functions.iter().enumerate().find(|(_, (n, _))| {
+        n == func
+    }).unwrap_or_else(|| {
+        eprintln!("Failed to find {:?}", func);
+        eprintln!("Functions are:");
+        for (n, _) in mc_functions.iter() {
+            eprintln!("{:?}", n);
+        }
+        panic!();
+    }).0
 }
 
 fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
@@ -2433,17 +3322,7 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
 
             match fixup_type {
                 "BLOCKIDX" => {
-                    let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
-                        n == fixup_value
-                    }).unwrap_or_else(|| {
-                        eprintln!("Failed to find {:?}", fixup_value);
-                        eprintln!("Functions are:");
-                        for (n, _) in mc_functions.iter() {
-                            eprintln!("{:?}", n);
-                        }
-                        panic!();
-                    }).0;
-
+                    let idx = get_entry_index_named(fixup_value, mc_functions);
                     let idx = idx.to_string();
 
                     mc_functions[func_idx].1.replace_range(start..=end, &idx);
@@ -2460,8 +3339,7 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
                         panic!();
                     }).0;
 
-                    // FIXME:
-                    let pos = format!("{} 1 -1", idx);
+                    let pos = block_pos_from_idx(idx, true);
 
                     mc_functions[func_idx].1.replace_range(start..=end, &pos);
                 }
@@ -2475,11 +3353,7 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
 
 use datapack_vm::interpreter::InterpError;
 
-fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> i32 {
-    let mut mir = setup_state(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data);
-
-    let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
-
+fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_arity: usize) -> Vec<(i32, Option<i32>)> {
     loop {
         //println!("Stepping MIR, pc is {:?}", mir.pc);
 
@@ -2512,39 +3386,86 @@ fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, 
 
     compare_states(&mir, &cmd);
 
-    mir.registers.get(&Register::Return).unwrap().0
+    let mut returns = Vec::new();
+    for i in 0..return_arity {
+        let lo = mir.registers.get_i32(Register::Return(i as u32));
+        let hi = mir.registers.0.get(&Register::Return(i as u32).as_hi()).copied();
+        returns.push((lo, hi));
+    }
+
+    returns
+
+}
+
+fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> Vec<(i32, Option<i32>)> {
+    let mut mir = setup_state(&basic_blocks, wasm_file);
+
+    let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+
+    let func_idx = wasm_file.exports.get_func("_start");
+    let func_ty = wasm_file.functions.get_function_type(func_idx, &wasm_file.types);
+
+    run_and_compare2(&mut mir, &mut cmd, func_ty.returns.len())
 }
 
 fn compare_states(mir: &State, cmd: &Interpreter) {
     let mut diffs = Vec::new();
 
+    /*
     for (name, value) in cmd.scoreboard.0.get("reg").unwrap().iter() {
-        if let Ok((reg, is_hi)) = Register::parse(name.as_ref()) {
-            let pair = mir.registers.get(&reg).unwrap();
+        if let Ok(reg) = name.as_ref().parse::<HalfRegister>() {
+            let mir_val = mir.registers.get_half(reg)/*.unwrap_or_else(|| panic!("Uninit reg {:?} (hi:){}", reg, is_hi))*/;
 
-            if is_hi {
-                if pair.1 != *value {
-                    diffs.push((reg, true, pair.1, *value))
-                }
-                //assert_eq!(pair.1, *value);
-            } else {
-                if pair.0 != *value {
-                    diffs.push((reg, false, pair.0, *value))
-                }
-                //assert_eq!(pair.0, *value);
+            if mir_val != *value {
+                diffs.push((reg, mir_val, *value));
             }
         }
     }
+    */
 
-    for (name, is_hi, mir, cmd) in diffs.iter() {
-        if *is_hi {
-            println!("{} : {} (mir) vs {} (cmd)", name.get_hi(), mir, cmd);
-        } else {
-            println!("{} : {} (mir) vs {} (cmd)", name.get_lo(), mir, cmd);
+    let obj = cmd.scoreboard.0.get("reg").unwrap();
+
+    for (&reg, &mir_value) in mir.registers.0.iter() {
+        let holder = datapack_vm::cir::ScoreHolder::new(reg.to_string()).unwrap();
+        let cmd_value = obj.get(&holder).copied();
+
+        if Some(mir_value) != cmd_value {
+            diffs.push((reg, mir_value, cmd_value));
         }
     }
+    
+    if !diffs.is_empty() {
+        println!("=== Registers ===");
+        println!("-- MIR --");
+        let mut mir_regs = mir.registers.0.iter().collect::<Vec<_>>();
+        mir_regs.sort();
+        for (&reg, &mir_value) in mir_regs {
+            println!("{} : {}", reg, mir_value);
+        }
+        println!("-- CMD --");
+        let mut cmd_regs = obj.iter()
+            .filter_map(|(r, v)| {
+                if let Ok(reg) = r.as_ref().parse::<HalfRegister>() {
+                    Some((reg, v))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        cmd_regs.sort();
+        for (reg, cmd_value) in cmd_regs {
+            println!("{} : {}", reg, cmd_value);
+        }
+        println!();
 
-    assert!(diffs.is_empty());
+        println!("=== Diffs === ");
+        for (name, mir, cmd) in diffs.iter() {
+            println!("{} : {} (mir) vs {:?} (cmd)", name, mir, cmd);
+        }
+        println!();
+
+        panic!("MIR registers and CMD registers differed");
+    }
 }
 
 
@@ -2568,24 +3489,44 @@ mod test {
     }
 
     fn test_whole_program(path: &Path, expected: i32) {
+        test_whole_program2(path, (expected, None))
+    }
+
+    fn test_whole_program2(path: &Path, expected: (i32, Option<i32>)) {
+
         let file = std::fs::read(path).unwrap();
 
         let (basic_blocks, wasm_file) = compile(&file);
 
-        let mc_functions = assemble(&basic_blocks, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports, &wasm_file.data, true);
+        let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
         for func in mc_functions.iter() {
             println!("F: {:?}", func.0)
         }
 
+
+        let func_ty = wasm_file.functions.get_function_type(wasm_file.exports.get_func("_start"), &wasm_file.types);
+
         let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
 
-        assert_eq!(result, expected);
+        match &func_ty.returns[..] {
+            [Type::I32] => {
+                assert!(expected.1.is_none());
+                assert_eq!(result[0].0, expected.0);
+            }
+            [Type::I64] => {
+                assert_eq!(result[0].0, expected.0);
+                assert_eq!(result[0].1.unwrap(), expected.1.unwrap());
+            }
+            r => todo!("{:?}", r)
+        }
 
-        assert_eq!(run_wasm_file(path), expected);
+        //assert_eq!(run_wasm_file(path), expected);
     }
 
-    fn test_mir(program: Vec<Instr>, expected: i32) {
+    fn test_mir<I>(program: Vec<Instr>, expected: I)
+        where I: IntoIterator<Item=i32>,
+    {
         let mut bb = BasicBlock::new(CodeFuncIdx(0), 0);
         bb.instrs = program;
 
@@ -2607,12 +3548,23 @@ mod test {
             kind: ExternalKind::Function,
         });
         let data = DataList::new();
+        let mut functions = FunctionList::new();
+        functions.add_function(0);
+        let mut types = TypeList::new();
+        types.add_type(TypeDef::Func(FuncType {
+            params: Vec::new().into_boxed_slice(),
+            returns: vec![Type::I32].into_boxed_slice(),
+        }));
 
-        let mc_functions = assemble(&basic_blocks, &globals, &memory, &exports, &data, true);
+        let file = WasmFile {
+            types, globals, exports, data, functions, memory, imports: ImportList::new(), tables: TableList::new(), elements: ElementList::new(),
+        };
 
-        let mut mir = setup_state(&basic_blocks, &globals, &memory, &exports, &data);
+        let mc_functions = assemble(&basic_blocks, &file, true);
 
-        let mut cmd = setup_commands(&mc_functions, &globals, &memory, &exports);
+        let mut mir = setup_state(&basic_blocks, &file);
+
+        let mut cmd = setup_commands(&mc_functions, &file.globals, &file.memory, &file.exports);
 
         loop {
             //println!("Stepping MIR, pc is {:?}", mir.pc);
@@ -2643,7 +3595,9 @@ mod test {
 
         compare_states(&mir, &cmd);
 
-        assert_eq!(mir.registers.get(&Register::Return).unwrap().0, expected);
+        for (idx, val) in expected.into_iter().enumerate() {
+            assert_eq!(mir.registers.get_i32(Register::Return(idx as u32)), val);
+        }
 
         //assert_eq!(ir_result, cmd_result);
 
@@ -2658,28 +3612,47 @@ mod test {
     }
 
     #[test]
+    fn i64_mul() {
+        let expected = -5815198268866991520_i64;
+        let lo = expected as i32;
+        let hi = Some((expected >> 32) as i32);
+        test_whole_program2(Path::new("../i64_mul.wasm"), (lo, hi));
+    }
+
+    #[test]
+    fn stack_elim() {
+        test_whole_program(Path::new("./tests/stack_elim.wasm"), 42);
+    }
+
+    #[test]
+    #[ignore]
+    fn block_return() {
+        test_whole_program(Path::new("./tests/block_return.wasm"), 24);
+    }
+
+    #[test]
     fn nested_loop() {
-        test_whole_program(Path::new("../nested_loop.wasm"), 18);
+        test_whole_program(Path::new("./tests/nested_loop.wasm"), 18);
     }
 
     #[test]
     fn memtest() {
-        test_whole_program(Path::new("../memtest.wasm"), 42);
+        test_whole_program(Path::new("./tests/memtest.wasm"), 42);
     }
 
     #[test]
     fn arithmetic() {
-        test_whole_program(Path::new("../arithmetic.wasm"), -92);
+        test_whole_program(Path::new("./tests/arithmetic.wasm"), -92);
     }
 
     #[test]
     fn arithmetic2() {
-        test_whole_program(Path::new("../arithmetic2.wasm"), -11);
+        test_whole_program(Path::new("./tests/arithmetic2.wasm"), -11);
     }
 
     #[test]
     fn for_loop() {
-        test_whole_program(Path::new("../for_loop.wasm"), 45);
+        test_whole_program(Path::new("./tests/for_loop.wasm"), 45);
     }
 
     #[test]
@@ -2714,9 +3687,9 @@ mod test {
             Instr::PopI32Into(Register::Work(0)),
             Instr::SetMemPtr(Register::Work(0)),
 
-            Instr::LoadI32_8U(Register::Return, 0),
+            Instr::LoadI32_8U(Register::Return(0), 0),
         ]);
-        test_mir(load_byte, val1_bts[1] as u32 as i32);
+        test_mir(load_byte, Some(val1_bts[1] as u32 as i32));
 
         let mut load_halfword_unalign = prelude.clone();
         load_halfword_unalign.extend([
@@ -2724,9 +3697,9 @@ mod test {
             Instr::PopI32Into(Register::Work(0)),
             Instr::SetMemPtr(Register::Work(0)),
 
-            Instr::LoadI32_16U(Register::Return, 0),
+            Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
-        test_mir(load_halfword_unalign, u16::from_le_bytes([val1_bts[1], val1_bts[2]]) as u32 as i32);
+        test_mir(load_halfword_unalign, Some(u16::from_le_bytes([val1_bts[1], val1_bts[2]]) as u32 as i32));
 
         let mut load_halfword_align = prelude.clone();
         load_halfword_align.extend([
@@ -2734,9 +3707,9 @@ mod test {
             Instr::PopI32Into(Register::Work(0)),
             Instr::SetMemPtr(Register::Work(0)),
 
-            Instr::LoadI32_16U(Register::Return, 0),
+            Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
-        test_mir(load_halfword_align, u16::from_le_bytes([val1_bts[2], val1_bts[3]]) as u32 as i32);
+        test_mir(load_halfword_align, Some(u16::from_le_bytes([val1_bts[2], val1_bts[3]]) as u32 as i32));
 
         let mut load_word_unalign = prelude;
         load_word_unalign.extend([
@@ -2744,10 +3717,10 @@ mod test {
             Instr::PopI32Into(Register::Work(0)),
             Instr::SetMemPtr(Register::Work(0)),
 
-            Instr::LoadI32(Register::Return, 0),
+            Instr::LoadI32(Register::Return(0), 0),
            
         ]);
-        test_mir(load_word_unalign, 0x34_56_78_01);
+        test_mir(load_word_unalign, Some(0x34_56_78_01));
     }
 
     #[test]
@@ -2765,10 +3738,10 @@ mod test {
             Instr::PopI32Into(Register::Work(0)),
             Instr::SetMemPtr(Register::Work(0)),
 
-            Instr::LoadI32(Register::Return, 2),
+            Instr::LoadI32(Register::Return(0), 2),
         ];
 
-        test_mir(instrs, 42);
+        test_mir(instrs, Some(42));
     }
 
     #[test]
@@ -2791,18 +3764,340 @@ mod test {
             Instr::SetLocalPtr(1),
             Instr::LoadLocalI32(Register::Work(1)),
 
-            Instr::I32Op { dst: Register::Work(2), lhs: Register::Work(0), op: "/=", rhs: Register::Work(1) },
+            Instr::I32Op { dst: Register::Work(2).as_lo(), lhs: Register::Work(0).as_lo(), op: "/=", rhs: Register::Work(1).as_lo() },
 
             Instr::PushI32From(Register::Work(2)),
-            Instr::PopI32Into(Register::Return),
+            Instr::PopI32Into(Register::Return(0)),
 
             Instr::PopFrame(2),
         ];
 
-        test_mir(instrs, 1);
+        test_mir(instrs, Some(1));
     }
 
     // TODO: Add a test for division signs
 
     // TODO: Test I64 loads and stores
+
+
+    fn load_state(data: &[u8]) -> TestState {
+        let (basic_blocks, wasm_file) = compile(&data);
+
+        let mc_functions = assemble(&basic_blocks, &wasm_file, true);
+
+        let state = prepare_state(&basic_blocks, &wasm_file);
+        let interp = prepare_interp(&mc_functions, &wasm_file.globals, &wasm_file.memory);
+
+        //save_datapack(Path::new("../out"), mc_functions.clone(), &wasm_file);
+    
+        TestState { interp, state, basic_blocks, mc_functions, wasm_file }
+    }
+
+    /*
+    fn test_whole_program2(path: &Path, expected: i32) {
+        let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
+
+        assert_eq!(result, expected);
+
+        assert_eq!(run_wasm_file(path), expected);
+    }
+    */
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum SExprToken {
+        StrLit(String),
+        IntLit(i64),
+        Ident(String),
+        OpenParen,
+        CloseParen,
+    }
+
+    struct SExprLexer<'a> {
+        s: &'a str
+    }
+
+    impl Iterator for SExprLexer<'_> {
+        type Item = SExprToken;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.s.chars().next().unwrap().is_whitespace() {
+                let mut indices = self.s.char_indices();
+                indices.next();
+                self.s = &self.s[indices.next().unwrap().0..];
+            }
+
+            if self.s.is_empty() {
+                None
+            } else if self.s.starts_with('(') {
+                self.s = &self.s[1..];
+                Some(SExprToken::OpenParen)
+            } else if self.s.starts_with(')') {
+                self.s = &self.s[1..];
+                Some(SExprToken::CloseParen)
+            } else if self.s.starts_with('"') {
+                self.s = &self.s[1..];
+                let mut end_idx = None;
+                for (idx, c) in self.s.char_indices() {
+                    if c == '\\' {
+                        todo!()
+                    } else if c == '"' {
+                        end_idx = Some(idx);
+                        break
+                    }
+                }
+                let end_idx = end_idx.unwrap();
+                let name = self.s[..end_idx].to_string();
+                self.s = &self.s[end_idx+1..];
+                Some(SExprToken::StrLit(name))
+            } else if self.s.starts_with('-') || self.s.chars().next().unwrap().is_digit(10) {
+                let is_neg = if self.s.starts_with('-') {
+                    self.s = &self.s[1..];
+                    true
+                } else {
+                    false
+                };
+
+                let radix = if self.s.starts_with("0x") || self.s.starts_with("0X") {
+                    self.s = &self.s[2..];
+                    16
+                } else if self.s.starts_with("0b") || self.s.starts_with("0B") {
+                    self.s = &self.s[2..];
+                    2
+                // TODO: ???
+                /*
+                } else if self.s.starts_with('0')  {
+                    todo!("octal?")
+                */
+                } else {
+                    10
+                };
+
+                let end_idx = self.s.find(|c: char| !c.is_digit(radix)).unwrap();
+                let mut value = u64::from_str_radix(&self.s[..end_idx], radix).unwrap_or_else(|e| panic!("Failed to parse {} because {}", &self.s[..end_idx], e)) as i64;
+                if is_neg {
+                    value *= -1;
+                }
+
+                self.s = &self.s[end_idx..];
+                Some(SExprToken::IntLit(value))
+            } else {
+                let end_idx = self.s.find(|c: char| c.is_whitespace() || c == '(' || c == ')').unwrap();
+                let name = self.s[..end_idx].to_string();
+                self.s = &self.s[end_idx..];
+                Some(SExprToken::Ident(name))
+            }
+        }
+    }
+
+    struct SExprParser<'a> {
+        s: std::iter::Peekable<SExprLexer<'a>>
+    }
+
+    impl<'a> SExprParser<'a> {
+        pub fn new(s: &'a str) -> Self {
+            SExprParser { s: SExprLexer { s }.peekable() }
+        }
+
+        pub fn parse(&mut self) -> Result<SExpr, String> {
+            if self.s.peek() == Some(&SExprToken::OpenParen) {
+                let (name, params) = self.parse_parenthesized()?;
+                if name == "assert_return" {
+                    let mut params = params.into_iter();
+                    let lhs = params.next().unwrap();
+                    let rhs = params.collect();
+                    Ok(SExpr::AssertReturn(Box::new(lhs), rhs))
+                } else if name == "assert_trap" {
+                    let mut params = params.into_iter();
+                    let lhs = params.next().unwrap();
+                    let rhs = params.next().unwrap();
+                    assert!(params.next().is_none());
+                    let rhs = if let SExpr::String(s) = rhs {
+                        s
+                    } else {
+                        panic!()
+                    };
+                    Ok(SExpr::AssertTrap(Box::new(lhs), rhs))
+                } else {
+
+                    Ok(SExpr::Node { name, params })
+                }
+            } else {
+                let tok = self.s.next().unwrap();
+                match tok {
+                    SExprToken::IntLit(i) => Ok(SExpr::Int(i)),
+                    SExprToken::StrLit(s) => Ok(SExpr::String(s)),
+                    SExprToken::Ident(i) => Ok(SExpr::Ident(i)),
+                    _ => todo!("{:?}", tok)
+                }
+            }
+        }
+
+        pub fn parse_parenthesized(&mut self) -> Result<(String, Vec<SExpr>), String> {
+            if self.s.next() != Some(SExprToken::OpenParen) {
+                return Err("expected opening parenthesis".to_string())
+            }
+
+            let name = if let Some(SExprToken::Ident(i)) = self.s.next() {
+                i
+            } else {
+                return Err("expected ident".to_string())
+            };
+
+            let mut params = Vec::new();
+            while self.s.peek() != Some(&SExprToken::CloseParen) {
+                params.push(self.parse()?);
+            }
+
+            if self.s.next() != Some(SExprToken::CloseParen) {
+                return Err("expecting closing paren".to_string());
+            }
+
+            Ok((name, params))
+        }
+    }
+
+    #[derive(Debug)]
+    enum SExpr {
+        Node {
+            name: String,
+            params: Vec<SExpr>,
+        },
+        AssertReturn(Box<SExpr>, Vec<SExpr>),
+        AssertTrap(Box<SExpr>, String),
+        String(String),
+        Ident(String),
+        Int(i64),
+    }
+
+    impl std::str::FromStr for SExpr {
+        type Err = String;
+
+        fn from_str(mut s: &str) -> Result<Self, Self::Err> {
+            SExprParser::new(s).parse()
+        }
+    }
+
+    struct TestState<'a> {
+        interp: Interpreter,
+        state: State,
+        basic_blocks: Vec<BasicBlock<Instr>>,
+        mc_functions: Vec<(String, String)>,
+        wasm_file: WasmFile<'a>,
+    }
+
+    use std::convert::TryFrom;
+
+    impl TestState<'_> {
+        pub fn eval_expr(&mut self, s: &SExpr) -> Vec<WasmValue> {
+            match s {
+                /*SExpr::Int(i) => {
+                    WasmValue::I32(i32::try_from(*i).unwrap())
+                }*/
+                SExpr::Node { name, params } if name == "i32.const" => {
+                    assert_eq!(params.len(), 1);
+                    if let SExpr::Int(i) = &params[0] {
+                        let i = if *i < 0 {
+                            i32::try_from(*i).unwrap()
+                        } else {
+                            u32::try_from(*i).unwrap() as i32
+                        };
+                        vec![WasmValue::I32(i)]
+                    } else {
+                        panic!()
+                    }
+                }
+                SExpr::Node { name, params } if name == "i64.const" => {
+                    assert_eq!(params.len(), 1, "{:?}", params);
+                    if let SExpr::Int(i) = &params[0] {
+                        vec![WasmValue::I64(*i)]
+                    } else {
+                        panic!()
+                    }
+                }
+                SExpr::Node { name, params } if name == "invoke" => {
+                    let name = if let SExpr::String(n) = &params[0] {
+                        n
+                    } else {
+                        panic!()
+                    };
+
+                    let args = params[1..].iter().map(|p| self.eval_expr(p)).collect::<Vec<_>>();
+
+                    for (idx, arg) in args.iter().enumerate() {
+                        match &arg[..] {
+                            [WasmValue::I32(arg)] => {
+                                self.state.registers.set_i32(Register::Param(idx as u32), *arg);
+                                let holder = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
+                                let obj = "reg".to_string();
+                                self.interp.scoreboard.set(&holder, &obj, *arg);
+                            }
+                            [WasmValue::I64(arg)] => {
+                                self.state.registers.set_i64(Register::Param(idx as u32), *arg);
+                                let obj = "reg".to_string();
+                                let holder_lo = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
+                                let arg_lo = *arg as i32;
+                                self.interp.scoreboard.set(&holder_lo, &obj, arg_lo);
+                                let holder_hi = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_hi()).unwrap();
+                                let arg_hi = (*arg >> 32) as i32;
+                                self.interp.scoreboard.set(&holder_hi, &obj, arg_hi);
+
+                                println!("arg: {}", arg);
+                            }
+                            _ => todo!()
+                        }
+                    }
+
+                    set_state_pos(&mut self.state, &self.wasm_file.exports, name);
+
+                    set_interp_pos(&mut self.interp, &self.mc_functions, name);
+
+                    let func_ty = self.wasm_file.functions.get_function_type(self.wasm_file.exports.get_func(name), &self.wasm_file.types);
+
+                    let result = run_and_compare2(&mut self.state, &mut self.interp, func_ty.returns.len());
+
+                    let mut returns = Vec::new();
+                    for (val, ty) in result.into_iter().zip(func_ty.returns.iter()) {
+                        match ty {
+                            Type::I32 => returns.push(WasmValue::I32(val.0)),
+                            Type::I64 => returns.push(WasmValue::I64((val.0 as i64) | ((val.1.unwrap() as i64) << 32))),
+                            t => todo!("{:?}", t)
+                        }
+                    }
+
+                    returns
+                }
+                _ => todo!("{:?}", s)
+            }
+        }
+
+        pub fn run_check(&mut self, s: &str) {
+            let orig_s = s;
+            let s: SExpr = s.parse().unwrap();
+
+            match s {
+                SExpr::AssertReturn(lhs, rhs) => {
+                    println!("Assert return {:?} {:?}", lhs, rhs);
+                    let l = self.eval_expr(&lhs);
+
+                    let r = rhs.iter().flat_map(|r| self.eval_expr(r)).collect::<Vec<_>>();
+
+                    if l != r {
+                        println!("In test {:?}", orig_s);
+                        
+                        println!("Actual:   {:?}", l);
+                        println!("Expected: {:?}", r);
+                        panic!();
+                    }
+                }
+                SExpr::AssertTrap(lhs, error) => {
+                    println!("TODO: ASSERT TRAP");
+                }
+                SExpr::Node { name, .. } if name == "assert_malformed" => {}
+                SExpr::Node { name, .. } if name == "assert_invalid" => {}
+                _ => todo!("{:?}", s)
+            }
+        }
+    }
+
+    include!("../tests/wasm_suite/tests.rs.gen");
 }
