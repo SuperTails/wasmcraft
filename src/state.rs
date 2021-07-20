@@ -435,6 +435,26 @@ impl State {
 
                 self.registers.set_i32(dst_reg, result);
             }
+            &SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
+                let c = self.registers.get_i32(cond_reg);
+                let t = self.registers.get_i64(true_reg);
+                let f = self.registers.get_i64(false_reg);
+
+                let result = if c != 0 { t } else { f };
+
+                self.registers.set_i64(dst_reg, result);
+            }
+            &I64Eq { dst, lhs, invert, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = if invert {
+                    l != r
+                } else {
+                    l == r
+                };
+
+                self.registers.set_i32(dst, d as i32);
+            }
 
 			RawBranch(l) => {
                 self.pc = (self.get_pc(l), 0);
@@ -576,6 +596,12 @@ impl State {
                 let r = self.registers.get_i64(rhs);
                 let d = l.wrapping_add(r);
                 println!("l: {:#X}, r: {:#X}, d: {:#X}", l, r, d);
+                self.registers.set_i64(dst, d);
+            }
+            &I64Shl { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l << r;
                 self.registers.set_i64(dst, d);
             }
             &I32Op { dst, lhs, op, rhs } => {

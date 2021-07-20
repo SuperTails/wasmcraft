@@ -183,7 +183,10 @@ enum Instr {
 
     I64Add { dst: Register, lhs: Register, rhs: Register },
 
+    I64Eq { dst: Register, lhs: Register, invert: bool, rhs: Register },
     I64UComp { dst: Register, lhs: Register, op: Relation, rhs: Register },
+
+    I64Shl { dst: Register, lhs: Register, rhs: Register },
 
     I32MulTo64 { dst: Register, lhs: HalfRegister, rhs: HalfRegister },
 
@@ -241,6 +244,7 @@ enum Instr {
 
     Drop,
     SelectI32 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
+    SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
 }
@@ -800,6 +804,18 @@ impl Instr {
                 body.push(format!("scoreboard players operation {} reg = %return%1 reg", dst.as_hi()));
             }
 
+            I64Shl { dst, lhs, rhs } => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+
+                body.push("function intrinsic:shl".to_string());
+
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+
             I64Add { dst, lhs, rhs } => {
                 let carry = Register::Work(10).as_lo();
 
@@ -839,6 +855,13 @@ impl Instr {
                 body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), carry));
             }
 
+            &I64Eq { dst, lhs, invert, rhs } => {
+                body.push(format!("execute store success score {} reg if score {} reg = {} reg if score {} reg = {} reg", dst.as_lo(), lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi()));
+
+                if invert {
+                    body.push(format!("execute store success score {} reg if score {} reg matches 0..0", dst.as_lo(), dst.as_lo()));
+                }
+            }
             &I64UComp { dst, mut lhs, mut op, mut rhs } => {
                 /*
                     if lhs_hi ltu rhs_hi:
@@ -1094,6 +1117,16 @@ impl Instr {
 
                 body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_lo(), false_reg.get_lo()));
                 //body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
+            }
+            SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
+                assert_ne!(dst_reg, false_reg);
+                assert_ne!(dst_reg, cond_reg);
+
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
+                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
+
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_lo(), false_reg.as_lo()));
+                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_hi(), false_reg.as_hi()));
             }
 
             Unreachable => {
@@ -1822,6 +1855,18 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
             }
 
+            I64Shl => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64Shl { dst, lhs, rhs });
+                self.op_stack.push_i64();
+                self.push_instr(Instr::PushI64From(dst));
+            }
             I64Add => {
                 let lhs = Register::Work(0);
                 let rhs = Register::Work(1);
@@ -1834,6 +1879,47 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
                 self.push_instr(Instr::PushI64From(dst));
             }
+            I64Eq => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64Eq { dst, lhs, invert: false, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+            I64Ne => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64Eq { dst, lhs, invert: true, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+
+            I64Or => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+
+                self.push_instr(Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "|=", rhs: rhs.as_lo() });
+                self.push_instr(Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "|=", rhs: rhs.as_hi() });
+
+                self.op_stack.push_i64();
+                self.push_instr(Instr::PushI64From(dst));
+            }
+
             I64Sub => {
                 let lhs = Register::Work(0);
                 let rhs = Register::Work(1);
@@ -1998,9 +2084,11 @@ impl FuncBodyStream {
                     Type::I32 => {
                         self.push_instr(Instr::SelectI32 { dst_reg: true_reg, true_reg, false_reg, cond_reg });
                     }
+                    Type::I64 => {
+                        self.push_instr(Instr::SelectI64 { dst_reg: true_reg, true_reg, false_reg, cond_reg });
+                    }
                     _ => todo!("{:?}", true_ty)
                 }
-
 
                 self.push_instr(Instr::push_from(true_reg, true_ty));
                 // TODO: can they be different types?
@@ -2558,6 +2646,11 @@ fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>, wasm_f
     }
 }
 
+struct FunctionBody<'a> {
+    operators: Vec<Operator<'a>>,
+    locals: Vec<(u32, Type)>,
+}
+
 struct WasmFile<'a> {
     types: TypeList<'a>,
     globals: GlobalList<'a>,
@@ -2568,6 +2661,7 @@ struct WasmFile<'a> {
     tables: TableList,
     elements: ElementList<'a>,
     functions: FunctionList,
+    bodies: Vec<FunctionBody<'a>>,
 }
 
 pub struct RunOptions {
@@ -2577,8 +2671,9 @@ pub struct RunOptions {
 
 pub fn run(run_options: &RunOptions) {
     let file = std::fs::read(&run_options.wasm_path).unwrap();
+    let wasm_file = parse_wasm_file(&file);
 
-    let (basic_blocks, wasm_file) = compile(&file);
+    let basic_blocks = compile(&wasm_file);
 
     let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
@@ -2780,7 +2875,7 @@ impl<'a> ElementList<'a> {
     }
 }
 
-fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
+fn parse_wasm_file(file: &[u8]) -> WasmFile {
     let mut types = TypeList::new();
     let mut globals = GlobalList::new();
     let mut memory = MemoryList::new();
@@ -2844,7 +2939,16 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
                 func_reader = Some(f);
             }
             Payload::CodeSectionEntry(e) => {
-                codes.push(e);
+                let operators = e.get_operators_reader().unwrap()
+                    .into_iter()
+                    .map(|o| o.unwrap())
+                    .collect::<Vec<_>>();
+                let locals = e.get_locals_reader().unwrap()
+                    .into_iter()
+                    .map(|l| l.unwrap())
+                    .collect::<Vec<_>>();
+
+                codes.push(FunctionBody { operators, locals });
             }
             Payload::TableSection(t) => {
                 for table in t {
@@ -2864,8 +2968,6 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
         }
     }
 
-    let mut basic_blocks = Vec::new();
-
     let mut functions = FunctionList::new(); 
 
     for (i, f) in imports.imports.iter().enumerate() {
@@ -2873,7 +2975,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
             functions.add_function(func)
         }
 
-        let mut set_turtle_coord = |axis| {
+        /*let mut set_turtle_coord = |axis| {
             let mut bb = BasicBlock::new(CodeFuncIdx(i as u32), 0);
 
             let ret_reg = Register::Work(0);
@@ -2931,7 +3033,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
             }
         } else {
             todo!("{:?}", f)
-        }
+        }*/
     }
 
     let func_reader = func_reader.unwrap();
@@ -2941,38 +3043,34 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
         functions.add_function(func);
     }
 
-    let mut func_idx = CodeFuncIdx(imports.num_funcs() as u32);
-    for e in codes {
+    WasmFile { functions, memory, globals, exports, imports, types, tables, data, elements, bodies: codes }
+}
+
+fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
+    let mut basic_blocks = Vec::new();
+
+    let mut func_idx = CodeFuncIdx(file.imports.num_funcs() as u32);
+    for e in file.bodies.iter() {
         println!("Doing function {}", func_idx.0);
 
-        let func_type = functions.get_function_type(func_idx, &types);
+        let func_type = file.functions.get_function_type(func_idx, &file.types);
 
-        let operators = e.get_operators_reader().unwrap()
-            .into_iter()
-            .map(|o| o.unwrap())
-            .collect::<Vec<_>>();
-        
         let mut locals = Vec::new();
         for param in func_type.params.iter() {
             locals.push((1, *param))
         }
 
-        locals.extend(
-        e.get_locals_reader().unwrap()
-            .into_iter()
-            .map(|l| l.unwrap())
-        );
+        locals.extend(e.locals.iter().copied());
 
         let local_count = locals.iter().map(|(c, _)| *c).sum();
 
-        let func_ty = TypeOrFuncType::FuncType(functions.functions[func_idx.0 as usize]);
+        let func_ty = TypeOrFuncType::FuncType(file.functions.functions[func_idx.0 as usize]);
 
-        let mut s = FuncBodyStream::new(func_ty, &types, func_idx);
+        let mut s = FuncBodyStream::new(func_ty, &file.types, func_idx);
 
-
-        s.setup_arguments(local_count, &types, &functions, &locals);
-        for (idx, o) in operators.into_iter().enumerate() {
-            s.visit_operator(o, local_count, &types, &functions, &memory, &globals, &locals, &imports);
+        s.setup_arguments(local_count, &file.types, &file.functions, &locals);
+        for (idx, o) in e.operators.iter().cloned().enumerate() {
+            s.visit_operator(o, local_count, &file.types, &file.functions, &file.memory, &file.globals, &locals, &file.imports);
         }
         assert!(s.op_stack.0.is_empty(), "{:?}", s.op_stack);
 
@@ -2983,9 +3081,7 @@ fn compile(file: &[u8]) -> (Vec<BasicBlock<Instr>>, WasmFile) {
         func_idx.0 += 1;
     }
 
-    let wasm_file = WasmFile { functions, memory, globals, exports, imports, types, tables, data, elements };
-
-    (basic_blocks, wasm_file)
+    basic_blocks
 }
 
 fn run_ir(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
@@ -3495,8 +3591,9 @@ mod test {
     fn test_whole_program2(path: &Path, expected: (i32, Option<i32>)) {
 
         let file = std::fs::read(path).unwrap();
+        let wasm_file = parse_wasm_file(&file);
 
-        let (basic_blocks, wasm_file) = compile(&file);
+        let basic_blocks = compile(&wasm_file);
 
         let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
@@ -3557,7 +3654,7 @@ mod test {
         }));
 
         let file = WasmFile {
-            types, globals, exports, data, functions, memory, imports: ImportList::new(), tables: TableList::new(), elements: ElementList::new(),
+            types, globals, exports, data, functions, memory, imports: ImportList::new(), tables: TableList::new(), elements: ElementList::new(), bodies: Vec::new(),
         };
 
         let mc_functions = assemble(&basic_blocks, &file, true);
@@ -3781,7 +3878,9 @@ mod test {
 
 
     fn load_state(data: &[u8]) -> TestState {
-        let (basic_blocks, wasm_file) = compile(&data);
+        let wasm_file = parse_wasm_file(data);
+
+        let basic_blocks = compile(&wasm_file);
 
         let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
