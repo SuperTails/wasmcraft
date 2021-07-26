@@ -1,4 +1,3 @@
-
 execute store success score %%temp0_lshr_inner reg if score %param0%0 reg matches ..-1
 
 # Have to split this in two because you can't actually subtract i32::MAX

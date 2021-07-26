@@ -44,15 +44,51 @@ impl<T> BasicBlock<T> {
     }
 }
 
+//  Assume the MIR and the CMD are in sync.
+//
+//  If the next instruction is normal:
+//      Step the MIR
+//      There must be a sync point immediately following the instruction (ish).
+//      Run the CMD to a sync point.
+
+//  If the next instruction is a branch in direct mode:
+//      Step the MIR.
+//      The source instruction must be followed by a sync point.
+//      The target block must begin with a sync point.
+//      Run the CMD to a sync point.
+//  If the next instruction is the last in direct mode:
+//      Step the MIR and unwind *one* frame, and incr the pc when you get there.
+//      The last instruction must *not* be followed by a sync point.
+//      We know when we get back there will be a sync point.
+//      Run the CMD to a sync point.
+
+//  If the next instruction is a branch in indirect mode:
+//      Step the MIR.
+//      The source instruction must *not* be followed by a sync point.
+//      The target block must begin with a sync point.
+//      Run the CMD to a sync point.
+//  If the next instruction is the last in indirect mode:
+//      Step the MIR and unwind *one* frame, and incr the pc when you get there.
+//      The last instruction must *not* be followed by a sync point.
+//      Run the CMD to a sync point, because we know the beginning of the target block has one.
+
 impl BasicBlock<Instr> {
     fn lower(&self, globals: &GlobalList, insert_sync: bool) -> BasicBlock<String> {
         let mut body = Vec::new();
+
+        if insert_sync {
+            body.push(format!("# !INTERPRETER: SYNC -1"));
+        }
 
         for (idx, i) in self.instrs.iter().enumerate() {
             i.lower(&mut body, &globals);
             if insert_sync {
                 body.push(format!("# !INTERPRETER: SYNC {}", idx));
             }
+        }
+
+        if insert_sync {
+            body.pop();
         }
 
         BasicBlock {
@@ -62,7 +98,15 @@ impl BasicBlock<Instr> {
     }
 }
 
-const USE_GRID_CALL: bool = true;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchConv {
+    Grid,
+    Loop,
+    Chain,
+    Direct,
+}
+
+const BRANCH_CONV: BranchConv = BranchConv::Grid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -182,17 +226,23 @@ enum Instr {
     BranchTable { reg: Register, targets: Vec<BranchTarget>, default: Option<BranchTarget> },
 
     I64Add { dst: Register, lhs: Register, rhs: Register },
+    I64DivS { dst: Register, lhs: Register, rhs: Register },
+    I64DivU { dst: Register, lhs: Register, rhs: Register },
 
     I64Eq { dst: Register, lhs: Register, invert: bool, rhs: Register },
     I64UComp { dst: Register, lhs: Register, op: Relation, rhs: Register },
+    I64SComp { dst: Register, lhs: Register, op: Relation, rhs: Register },
 
     I64Shl { dst: Register, lhs: Register, rhs: Register },
+    I64ShrU { dst: Register, lhs: Register, rhs: Register },
+    I64ShrS { dst: Register, lhs: Register, rhs: Register },
 
     I32MulTo64 { dst: Register, lhs: HalfRegister, rhs: HalfRegister },
 
     I32Op { dst: HalfRegister, lhs: HalfRegister, op: &'static str, rhs: HalfRegister },
 
     I32Ctz(Register),
+    I32Clz(Register),
     I64Ctz { dst: Register, src: Register },
 
     PopValueInto(Register),
@@ -247,6 +297,22 @@ enum Instr {
     SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
+}
+
+fn push_cond(reg: HalfRegister) -> Vec<String> {
+    vec![
+        format!("scoreboard players operation %%tempcond reg = {} reg", reg),
+        "execute at @e[tag=condstackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %%tempcond reg".to_string(),
+        "execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~1 ~ ~".to_string(),
+    ]
+}
+
+fn read_cond() -> String {
+    format!("execute at @e[tag=condstackptr] store result score %%tempcond reg run data get block ~-1 ~ ~ RecordItem.tag.Memory 1")
+}
+
+fn pop_cond() -> String {
+    "execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~-1 ~ ~".to_string()
 }
 
 #[derive(Debug)]
@@ -444,15 +510,30 @@ impl Instr {
                 body.push(format!("scoreboard players operation {} reg /= {} reg", dst, rhs));
             }
             "/=u" => {
-                // FIXME:
+                let sign = Register::Work(20).as_lo();
+
+                assert_ne!(sign, lhs);
+                assert_ne!(sign, rhs);
+                assert_ne!(sign, dst);
 
                 assert_ne!(lhs, dst);
                 assert_ne!(rhs, dst);
 
+                body.push(format!("scoreboard players set {} reg 1", sign));
+
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg *= %%-1 reg", lhs, sign));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg *= %%-1 reg", lhs, lhs));
+
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg *= %%-1 reg", rhs, sign));
+                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players operation {} reg *= %%-1 reg", rhs, rhs));
+
                 body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 0..", lhs));
                 body.push(format!("# !INTERPRETER: ASSERT if score {} reg matches 1..", rhs));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", lhs, rhs));
+
                 body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                body.push(format!("scoreboard players operation {} reg /= {} reg", dst, rhs));
+
+                body.push(format!("scoreboard players operation {} reg *= {} reg", dst, sign));
             }
             "remu" => {
                 // FIXME: 
@@ -506,6 +587,18 @@ impl Instr {
                 body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
                 body.push("function intrinsic:lshr".to_string());
                 body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+            }
+            "shrs" => {
+                assert_ne!(dst, rhs);
+
+                if dst != lhs {
+                    body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                }
+
+                for i in 1..31 {
+                    body.push(format!("execute if score {} reg matches {}..{} run scoreboard players operation {} reg /= %%{} reg", rhs, i, i, dst, 1 << i))
+                }
+                body.push(format!("execute if score {} reg matches 32.. run scoreboard players set {} reg 0", rhs, dst));
             }
             "gts" | "ges" | "les" | "lts" | "==" => {
                 let score_op = match op {
@@ -810,10 +903,46 @@ impl Instr {
 
                 body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
 
-                body.push("function intrinsic:shl".to_string());
+                body.push("function intrinsic:shl_64".to_string());
 
                 body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
                 body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            I64ShrU { dst, lhs, rhs } => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+
+                body.push("function intrinsic:lshr_i64".to_string());
+
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            I64ShrS { dst, lhs, rhs } => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+
+                body.push("function intrinsic:ashr_i64".to_string());
+
+                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            &I64DivS { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                body.push("function intrinsic:i64_sdiv".to_string());
+            }
+            &I64DivU { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                body.push("function intrinsic:i64_udiv".to_string());
             }
 
             I64Add { dst, lhs, rhs } => {
@@ -906,6 +1035,28 @@ impl Instr {
                 body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 0", hi_is_greater, dst.as_lo()));
                 body.push(format!("execute if score {} reg matches 1.. run scoreboard players operation {} reg = {} reg", hi_is_equal, dst.as_lo(), lo_is_lesser));
             }
+            &I64SComp { dst, mut lhs, mut op, mut rhs } => {
+                /*
+                    if lhs_hi ltu rhs_hi:
+                        return true
+                    if lhs_hi gtu rhs_hi:
+                        return false
+                    if lhs_hi == rhs_hi:
+                        return x_lo ltu y_lo
+                */
+
+                if op == Relation::GreaterThan {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::LessThan;
+                } else if op == Relation::GreaterThanEq {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::GreaterThan;
+                }
+
+                if op != Relation::LessThan {
+                    todo!()
+                }
+            }
 
             I32Eqz { val, cond } => {
                 body.push(format!("scoreboard players set {} reg 0", cond.get_lo()));
@@ -922,6 +1073,11 @@ impl Instr {
             I32Ctz(reg) => {
                 body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
                 body.push("function intrinsic:ctz".to_string());
+                body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
+            }
+            I32Clz(reg) => {
+                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
+                body.push("function intrinsic:clz".to_string());
                 body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
             }
             I64Ctz { src, dst } => {
@@ -971,7 +1127,15 @@ impl Instr {
                 let entry = get_block(entry);
 
                 body.push(format!("#   Jump to {}", entry));
-                body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
+                match BRANCH_CONV {
+                    BranchConv::Grid => {
+                        body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
+                    }
+                    BranchConv::Direct => {
+                        body.push(format!("function wasm:{}", entry));
+                    }
+                    c => todo!("{:?}", c)
+                }
             }
             Branch(target) => {
                 body.extend(Instr::branch(target, global_list))
@@ -987,37 +1151,61 @@ impl Instr {
             }
             BranchIf { t_name, f_name, cond } => {
                 body.push(format!("#   {:?}", self));
+
+                if BRANCH_CONV == BranchConv::Direct {
+                    body.extend(push_cond(cond.as_lo()));
+                } else {
+                    body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond.as_lo()));
+                }
+
                 let mut true_code = Instr::branch(t_name, global_list);
-                Instr::add_condition(&mut true_code, &format!("execute unless score {} reg matches 0..0 run ", cond.get_lo()));
+                Instr::add_condition(&mut true_code, &format!("execute unless score %%tempcond reg matches 0..0 run "));
                 body.extend(true_code);
 
-                /*let t_name = get_block(t_name);
-                
-                body.push(format!("execute unless score {} reg matches 0..0 run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", cond.get_lo(), t_name));
-                */
+                if BRANCH_CONV == BranchConv::Direct {
+                    body.push(read_cond());
+                }
 
                 let mut false_code = Instr::branch(f_name, global_list);
-                Instr::add_condition(&mut false_code, &format!("execute if score {} reg matches 0..0 run ", cond.get_lo()));
+                Instr::add_condition(&mut false_code, &format!("execute if score %%tempcond reg matches 0..0 run "));
                 body.extend(false_code);
+                
+                if BRANCH_CONV == BranchConv::Direct {
+                    body.push(pop_cond());
+                }
             }
             BranchTable { reg, targets, default } => {
                 if targets.is_empty() {
                     body.extend(Instr::branch(default.as_ref().unwrap(), global_list));
                 } else {
+                    if BRANCH_CONV == BranchConv::Direct {
+                        body.extend(push_cond(reg.as_lo()));
+                    } else {
+                        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", reg.as_lo()));
+                    }
+
                     for (idx, target) in targets.iter().enumerate() {
                         let mut code = Instr::branch(target, global_list);
-                        Instr::add_condition(&mut code, &format!("execute if score {} reg matches {}..{} run ", reg.get_lo(), idx, idx));
+                        Instr::add_condition(&mut code, &format!("execute if score %%tempcond reg matches {}..{} run ", idx, idx));
                         body.extend(code);
+
+                        if BRANCH_CONV == BranchConv::Direct {
+                            body.push(read_cond());
+                        }
                     }
 
                     if let Some(default) = default {
                         let mut code = Instr::branch(default, global_list);
-                        Instr::add_condition(&mut code, &format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1));
+                        Instr::add_condition(&mut code, &format!("execute unless score %%tempcond reg matches 0..{} run ", targets.len() - 1));
                         body.extend(code);
                     } else {
-                        let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), targets.len() - 1);
+                        let mut s = format!("execute unless score %%tempcond reg matches 0..{} run ", targets.len() - 1);
                         s.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
                         body.push(s);
+                    }
+                    
+                    if BRANCH_CONV == BranchConv::Direct {
+                        body.push(pop_cond());
                     }
                 }
             }
@@ -1292,11 +1480,17 @@ impl FuncBodyStream {
             self.op_stack.pop_ty(*ty);
         }
 
-        self.push_instr(Instr::Comment(" Pop return address".to_string()));
-        // Pop return address
-        let reg = Register::Work(0);
-        self.push_instr(Instr::PopI32Into(reg));
-        self.push_instr(Instr::DynBranch(reg, None));
+        match BRANCH_CONV {
+            BranchConv::Grid => {
+                self.push_instr(Instr::Comment(" Pop return address".to_string()));
+                // Pop return address
+                let reg = Register::Work(0);
+                self.push_instr(Instr::PopI32Into(reg));
+                self.push_instr(Instr::DynBranch(reg, None));
+            }
+            BranchConv::Direct => {}
+            bc => todo!("{:?}", bc)
+        }
 
         self.bb_index = old_bb_idx;
     }
@@ -1304,7 +1498,7 @@ impl FuncBodyStream {
     pub fn get_i32_dst(&mut self, lhs: Register, op: &str, rhs: Register) -> Register {
         match op {
             "+=" | "-=" | "*=" | "%=" |
-            "&=" | "|=" | "^=" | "shl" | "shru" => {
+            "&=" | "|=" | "^=" | "shl" | "shru" | "shrs" => {
                 lhs
             }
             "gts" | "ges" | "les" | "lts" | "==" | "!=" |
@@ -1312,7 +1506,7 @@ impl FuncBodyStream {
                 Register::Work(2)
             }
             _ => {
-                todo!()
+                todo!("{:?}", op)
             }
         }
 
@@ -1357,7 +1551,6 @@ impl FuncBodyStream {
     }
 
     pub fn setup_arguments(&mut self, local_count: u32, types: &TypeList, function_list: &FunctionList, locals: &[(u32, Type)]) {
-        self.push_instr(Instr::Comment(format!("Push frame {}", local_count)));
         self.push_instr(Instr::PushFrame(local_count));
 
         let ty = function_list.get_function_type(self.func_idx, types);
@@ -1503,46 +1696,50 @@ impl FuncBodyStream {
     /// Pushes the return address to the stack.
     /// Branches to the callee
     pub fn static_call(&mut self, function_index: CodeFuncIdx, types: &TypeList, function_list: &FunctionList) {
-        if USE_GRID_CALL {
-            // Pop values from the stack to use as the arguments
-            let ty = function_list.get_function_type(function_index, types);
-            for (i, param) in ty.params.iter().enumerate().rev() {
-                self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
-                self.op_stack.pop_ty(*param);
-            }
-
-            // Push return address
-            self.push_instr(Instr::Comment("  Push return address".to_string()));
-            self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
-
-            // Jump to function
-            self.push_instr(Instr::RawBranch(Label::new(function_index, 0)));
-        } else {
-            todo!()
+        // Pop values from the stack to use as the arguments
+        let ty = function_list.get_function_type(function_index, types);
+        for (i, param) in ty.params.iter().enumerate().rev() {
+            self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
+            self.op_stack.pop_ty(*param);
         }
+
+        match BRANCH_CONV {
+            BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
+                // Push return address
+                self.push_instr(Instr::Comment("  Push return address".to_string()));
+                self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
+
+            }
+            BranchConv::Direct => {}
+        }
+
+        // Jump to function
+        self.push_instr(Instr::RawBranch(Label::new(function_index, 0)));
     }
 
     pub fn dyn_call(&mut self, table_index: u32, ty: &FuncType) {
-        if USE_GRID_CALL {
-            // Pop function index
-            self.push_instr(Instr::PopI32Into(Register::Work(0)));
-            self.op_stack.pop_i32();
+        // Pop function index
+        self.push_instr(Instr::PopI32Into(Register::Work(0)));
+        self.op_stack.pop_i32();
 
-            // Pop values from the stack to use as the arguments
-            for (i, param) in ty.params.iter().enumerate().rev() {
-                self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
-                self.op_stack.pop_ty(*param);
-            }
-
-            // Push return address
-            self.push_instr(Instr::Comment("  Push return address".to_string()));
-            self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
-
-            // Jump to function
-            self.push_instr(Instr::DynBranch(Register::Work(0), Some(table_index)));
-        } else {
-            todo!()
+        // Pop values from the stack to use as the arguments
+        for (i, param) in ty.params.iter().enumerate().rev() {
+            self.push_instr(Instr::pop_into(Register::Param(i as u32), *param));
+            self.op_stack.pop_ty(*param);
         }
+
+        match BRANCH_CONV {
+            BranchConv::Grid => {
+                // Push return address
+                self.push_instr(Instr::Comment("  Push return address".to_string()));
+                self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
+            }
+            BranchConv::Direct => {}
+            bc => todo!("{:?}", bc),
+        }
+
+        // Jump to function
+        self.push_instr(Instr::DynBranch(Register::Work(0), Some(table_index)));
     }
 
     pub fn get_target(&self, relative_depth: u32) -> BranchTarget {
@@ -1561,6 +1758,26 @@ impl FuncBodyStream {
         self.basic_blocks.push(BasicBlock::new(self.func_idx, idx));
         self.reachable.push(true);
         idx
+    }
+
+    /// dst, lhs, rhs
+    pub fn make_i64_binop<F>(&mut self, func: F)
+        where F: FnOnce(Register, Register, Register) -> Vec<Instr>
+    {
+        let lhs = Register::Work(0);
+        let rhs = Register::Work(1);
+        let dst = Register::Work(2);
+        self.op_stack.pop_i64();
+        self.push_instr(Instr::PopI64Into(rhs));
+        self.op_stack.pop_i64();
+        self.push_instr(Instr::PopI64Into(lhs));
+
+        for i in func(dst, lhs, rhs) {
+            self.push_instr(i);
+        }
+
+        self.op_stack.push_i64();
+        self.push_instr(Instr::PushI64From(dst));
     }
 
     pub fn visit_operator(&mut self, o: Operator, local_count: u32, types: &TypeList, function_list: &FunctionList, memory_list: &MemoryList, global_list: &GlobalList, locals: &[(u32, Type)], imports: &ImportList) {
@@ -1608,7 +1825,12 @@ impl FuncBodyStream {
 
                     self.static_call(function_index, types, function_list);
 
-                    self.next_basic_block();
+                    match BRANCH_CONV {
+                        BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
+                            self.next_basic_block();
+                        }
+                        BranchConv::Direct => {}
+                    }
 
                     let f = function_list.get_function_type(function_index, types);
                     for (idx, ty) in f.returns.iter().enumerate() {
@@ -1627,7 +1849,12 @@ impl FuncBodyStream {
 
                 self.dyn_call(table_index, ty);
 
-                self.next_basic_block();
+                match BRANCH_CONV {
+                    BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
+                        self.next_basic_block();
+                    }
+                    BranchConv::Direct => {}
+                }
 
                 for (idx, ty) in ty.returns.iter().enumerate() {
                     self.push_instr(Instr::push_from(Register::Return(idx as u32), *ty));
@@ -1847,6 +2074,14 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(Register::Work(0)));
                 self.op_stack.push_i32();
             }
+            I32Clz => {
+                self.op_stack.pop_i32();
+                self.push_instr(Instr::PopI32Into(Register::Work(0)));
+                self.push_instr(Instr::I32Clz(Register::Work(0)));
+                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.op_stack.push_i32();
+            }
+
             I64Ctz => {
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(Register::Work(0)));
@@ -1855,29 +2090,99 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
             }
 
-            I64Shl => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+            I64Add => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![Instr::I64Add { dst, lhs, rhs }]
+                });
+            }
+            I64Sub => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    let mut instrs = Vec::new();
+                    for i in Instr::i64_neg(rhs) {
+                        instrs.push(i);
+                    }
+                    instrs.push(Instr::I64Add { dst, lhs, rhs });
+                    instrs
+                });
+            }
+            I64Mul => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    Instr::i64_mul(dst, lhs, rhs)
+                });
+            }
+            I64DivS => {
+                let lhs = Register::Param(0);
+                let rhs = Register::Param(1);
+                let dst = Register::Return(0);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(lhs));
-                self.push_instr(Instr::I64Shl { dst, lhs, rhs });
+
+                self.push_instr(Instr::I64DivS { dst, lhs, rhs });
+
                 self.op_stack.push_i64();
                 self.push_instr(Instr::PushI64From(dst));
             }
-            I64Add => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+            I64DivU => {
+                let lhs = Register::Param(0);
+                let rhs = Register::Param(1);
+                let dst = Register::Return(0);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(lhs));
-                self.push_instr(Instr::I64Add { dst, lhs, rhs });
+
+                self.push_instr(Instr::I64DivU { dst, lhs, rhs });
+
                 self.op_stack.push_i64();
                 self.push_instr(Instr::PushI64From(dst));
+
+            }
+
+            I64Shl => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![Instr::I64Shl { dst, lhs, rhs }]
+                });
+            }
+            I64ShrU => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![
+                        Instr::I64ShrU { dst, lhs, rhs },
+                    ]
+                })
+            }
+            I64ShrS => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![
+                        Instr::I64ShrS { dst, lhs, rhs },
+                    ]
+                })
+            }
+
+            I64Or => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "|=", rhs: rhs.as_lo() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "|=", rhs: rhs.as_hi() },
+                    ]
+                });
+            }
+            I64Xor => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "^=", rhs: rhs.as_lo() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "^=", rhs: rhs.as_hi() },
+                    ]
+                });
+            }
+            I64And => {
+                self.make_i64_binop(|dst, lhs, rhs| {
+                    vec![
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "&=", rhs: rhs.as_lo() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "&=", rhs: rhs.as_hi() },
+                    ]
+                });
             }
             I64Eq => {
                 let lhs = Register::Work(0);
@@ -1904,7 +2209,7 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
 
-            I64Or => {
+            I64GtS => {
                 let lhs = Register::Work(0);
                 let rhs = Register::Work(1);
                 let dst = Register::Work(2);
@@ -1912,30 +2217,11 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(lhs));
-
-                self.push_instr(Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "|=", rhs: rhs.as_lo() });
-                self.push_instr(Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "|=", rhs: rhs.as_hi() });
-
-                self.op_stack.push_i64();
-                self.push_instr(Instr::PushI64From(dst));
+                self.push_instr(Instr::I64SComp { dst, lhs, op: Relation::GreaterThan, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
             }
-
-            I64Sub => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
-                self.op_stack.pop_i64();
-                self.push_instr(Instr::PopI64Into(rhs));
-                for i in Instr::i64_neg(rhs) {
-                    self.push_instr(i);
-                }
-                self.op_stack.pop_i64();
-                self.push_instr(Instr::PopI64Into(lhs));
-                self.push_instr(Instr::I64Add { dst, lhs, rhs });
-                self.op_stack.push_i64();
-                self.push_instr(Instr::PushI64From(dst));
-            }
-            I64Mul => {
+            I64GeS => {
                 let lhs = Register::Work(0);
                 let rhs = Register::Work(1);
                 let dst = Register::Work(2);
@@ -1943,12 +2229,38 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(lhs));
-                for i in Instr::i64_mul(dst, lhs, rhs) {
-                    self.push_instr(i);
-                }
-                self.op_stack.push_i64();
-                self.push_instr(Instr::PushI64From(dst));
+                self.push_instr(Instr::I64SComp { dst, lhs, op: Relation::GreaterThanEq, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
             }
+
+            I64LtS => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64SComp { dst, lhs, op: Relation::LessThan, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+            I64LeS => {
+                let lhs = Register::Work(0);
+                let rhs = Register::Work(1);
+                let dst = Register::Work(2);
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(rhs));
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(lhs));
+                self.push_instr(Instr::I64SComp { dst, lhs, op: Relation::LessThanEq, rhs });
+                self.op_stack.push_i32();
+                self.push_instr(Instr::PushI32From(dst));
+            }
+
+
+
             I64LtU => {
                 let lhs = Register::Work(0);
                 let rhs = Register::Work(1);
@@ -2260,6 +2572,13 @@ impl FuncBodyStream {
             }
             I32LeU => {
                 self.make_i32_binop("leu");
+            }
+
+            I32WrapI64 => {
+                self.op_stack.pop_i64();
+                self.push_instr(Instr::PopI64Into(Register::Work(0)));
+                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.op_stack.push_i32();
             }
 
             I64ExtendI32S => {
@@ -2669,13 +2988,48 @@ pub struct RunOptions {
     pub out_path: Option<PathBuf>,
 }
 
+/*
+fn link(dst: &mut WasmFile, mut src: WasmFile) {
+    let type_offset = dst.types.types.len();
+
+    if !src.exports.exports.is_empty() {
+        todo!()
+    }
+    if !src.globals.globals.is_empty() {
+        todo!()
+    }
+    if !src.memory.memory.is_empty() {
+        todo!()
+    }
+    if !src.imports.imports.is_empty() {
+        todo!()
+    }
+    if !src.data.data.is_empty() {
+        todo!()
+    }
+    if !src.tables.tables.is_empty() {
+        todo!()
+    }
+    if !src.elements.elements.is_empty() {
+        todo!()
+    }
+    if !src.functions.functions.is_empty() {
+        todo!()
+    }
+    if !src.bodies.is_empty() {
+        todo!()
+    }
+}
+*/
+
 pub fn run(run_options: &RunOptions) {
     let file = std::fs::read(&run_options.wasm_path).unwrap();
-    let wasm_file = parse_wasm_file(&file);
+    let mut wasm_file = parse_wasm_file(&file);
+    link_intrinsics(&mut wasm_file);
 
     let basic_blocks = compile(&wasm_file);
 
-    let mc_functions = assemble(&basic_blocks, &wasm_file, true);
+    let mc_functions = assemble(&basic_blocks, &wasm_file, false);
 
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
@@ -3046,7 +3400,17 @@ fn parse_wasm_file(file: &[u8]) -> WasmFile {
     WasmFile { functions, memory, globals, exports, imports, types, tables, data, elements, bodies: codes }
 }
 
+fn link_intrinsics(file: &mut WasmFile) {
+    /*
+    let math = std::fs::read("../math2.wasm").unwrap();
+    let math_file = parse_wasm_file(&math);
+
+    link(file, math_file);
+    */
+}
+
 fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
+
     let mut basic_blocks = Vec::new();
 
     let mut func_idx = CodeFuncIdx(file.imports.num_funcs() as u32);
@@ -3171,7 +3535,7 @@ fn prepare_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
 }
 
 fn set_state_pos(state: &mut State, exports: &ExportList, name: &str) {
-    let idx = state.get_pc(&Label::new(exports.get_func(name), 0));
+    let idx = State::get_pc(&state.bbs, &Label::new(exports.get_func(name), 0));
 
     state.enter(idx);
 }
@@ -3207,10 +3571,13 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
         let mut new_block = bb.lower(&file.globals, insert_sync);
         let name = get_block(&new_block.label);
 
-        new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
+        //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
 
-        if USE_GRID_CALL {
-            new_block.instrs.insert(0, "setblock ~ ~1 ~ minecraft:air".to_string());
+        match BRANCH_CONV {
+            BranchConv::Grid | BranchConv::Loop => {
+                new_block.instrs.insert(0, "setblock ~ ~1 ~ minecraft:air".to_string());
+            }
+            BranchConv::Direct | BranchConv::Chain => {}
         }
 
 
@@ -3235,12 +3602,14 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
     kill @e[tag=stackptr]\n\
     kill @e[tag=globalptr]\n\
     kill @e[tag=turtle]\n\
+    kill @e[tag=condstackptr]\n\
     \n\
     # Add armor stand pointers\n\
     summon minecraft:armor_stand 0 0 8 {Marker:1b,Tags:[\"memoryptr\"],CustomName:'\"memoryptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
+    summon minecraft:armor_stand 0 3 0 {Marker:1b,Tags:[\"condstackptr\"],CustomName:'\"condstackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
     
@@ -3258,11 +3627,16 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
     scoreboard players set %%256 reg 256
     scoreboard players set %%65536 reg 65536
     scoreboard players set %%16777216 reg 16777216 
+    scoreboard players set %%-2147483648 reg -2147483648
     ".to_string();
 
     setup.push_str("\n# Make stack\n");
     setup.push_str("fill 0 0 0 30 0 0 minecraft:air replace\n");
     setup.push_str("fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
+    
+    setup.push_str("\n# Make condition stack\n");
+    setup.push_str("fill 0 3 0 100 3 0 minecraft:air replace\n");
+    setup.push_str("fill 0 3 0 100 3 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
 
     setup.push_str("\n# Make memory\n");
     for mem_cmd in file.memory.init() {
@@ -3282,36 +3656,71 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
         setup.push('\n');
     }
 
-    if USE_GRID_CALL {
-        setup.push_str("\n# Make commands\n");
-        for (idx, (name, _)) in mc_functions.iter().enumerate() {
-            let lo_pos = block_pos_from_idx(idx, false);
-            let hi_pos = block_pos_from_idx(idx, true);
-            // FIXME: Pos
-            let cmd = format!("fill {} {} minecraft:air replace", lo_pos, hi_pos);
-            setup.push_str(&cmd);
-            setup.push('\n');
-            let cmd = format!("setblock {} minecraft:command_block{{Command:\"function wasm:{}\"}} replace", lo_pos, name);
-            setup.push_str(&cmd);
-            setup.push('\n');
+    match BRANCH_CONV {
+        BranchConv::Grid => {
+            setup.push_str("\n# Make commands\n");
+            for (idx, (name, _)) in mc_functions.iter().enumerate() {
+                let lo_pos = block_pos_from_idx(idx, false);
+                let hi_pos = block_pos_from_idx(idx, true);
+                // FIXME: Pos
+                let cmd = format!("fill {} {} minecraft:air replace", lo_pos, hi_pos);
+                setup.push_str(&cmd);
+                setup.push('\n');
+                let cmd = format!("setblock {} minecraft:command_block{{Command:\"function wasm:{}\"}} replace", lo_pos, name);
+                setup.push_str(&cmd);
+                setup.push('\n');
+            }
         }
+        BranchConv::Direct => {}
+        bc => todo!("{:?}", bc)
     }
 
     mc_functions.push(("setup".to_string(), setup));
 
     let mut dyn_branch = String::new();
+    
+    if BRANCH_CONV == BranchConv::Direct {
+        let cmds = push_cond(Register::Work(0).as_lo()).join("\n");
+        dyn_branch.push_str(&cmds);
+        dyn_branch.push('\n');
+    }
+
     for (idx, (name, _)) in mc_functions.iter().enumerate() {
         let pos = block_pos_from_idx(idx, true);
 
         // FIXME: Reg0
-        let b = format!("# wasm:{}\nexecute if score %work%0%lo reg matches {}..{} run setblock {} minecraft:redstone_block destroy\n", name, idx, idx, pos);
-        dyn_branch.push_str(&b);
+        match BRANCH_CONV {
+            BranchConv::Grid => {
+                let b = format!("# wasm:{}\nexecute if score %work%0%lo reg matches {}..{} run setblock {} minecraft:redstone_block destroy\n", name, idx, idx, pos);
+                dyn_branch.push_str(&b);
+            }
+            BranchConv::Direct => {
+                dyn_branch.push_str(&read_cond());
+                dyn_branch.push('\n');
+
+                let b = format!("# wasm:{}\nexecute if score %%tempcond reg matches {}..{} run function wasm:{}\n", name, idx, idx, name);
+                dyn_branch.push_str(&b);
+            }
+            bc => todo!("{:?}", bc)
+        }
+    }
+
+    if BRANCH_CONV == BranchConv::Direct {
+        dyn_branch.push_str(&read_cond());
+        dyn_branch.push('\n');
+        dyn_branch.push_str(&pop_cond());
+        dyn_branch.push('\n');
+    } else {
+        dyn_branch.push_str("scoreboard players operation %%tempcond reg = %work%0%lo reg\n");
     }
 
     // FIXME:
-    let e = format!("execute unless score %work%0%lo reg matches 0..{} run ", mc_functions.len() - 1);
+    let e = format!("execute unless score %%tempcond reg matches 0..{} run ", mc_functions.len() - 1);
     dyn_branch.push_str(&e);
     dyn_branch.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
+    dyn_branch.push('\n');
+
+
 
     mc_functions.push(("dyn_branch".to_string(), dyn_branch));
 
@@ -3336,7 +3745,10 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
 
             let mut f = FuncBodyStream::new(TypeOrFuncType::FuncType(func_ty), &file.types, index);
             f.basic_blocks.push(BasicBlock::new(CodeFuncIdx(0), 0));
-            f.push_instr(Instr::PushI32Const(-1));
+
+            if BRANCH_CONV != BranchConv::Direct {
+                f.push_instr(Instr::PushI32Const(-1));
+            }
 
             // FIXME:
             if export.field == "main" {
@@ -3353,7 +3765,17 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
                 i.lower(&mut body, &file.globals);
             }
             let pos = block_pos_from_idx(idx, true);
-            body.push(format!("setblock {} minecraft:redstone_block destroy", pos));
+
+            match BRANCH_CONV {
+                BranchConv::Grid => {
+                    body.push(format!("setblock {} minecraft:redstone_block destroy", pos));
+                }
+                BranchConv::Direct => {
+                    let name = &mc_functions[idx].0;
+                    body.push(format!("function wasm:{}", name));
+                }
+                bc => todo!("{:?}", bc)
+            }
 
             let content = body.join("\n");
 
@@ -3367,14 +3789,39 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
 
 fn create_dyn_jumper(table: &state::Table) -> String {
     let mut dyn_branch = String::new();
+
+    if BRANCH_CONV == BranchConv::Direct {
+        let cmds = push_cond(Register::Work(0).as_lo()).join("\n");
+        dyn_branch.push_str(&cmds);
+        dyn_branch.push('\n');
+    }
+
     for (idx, dest) in table.elements.iter().enumerate() {
         if let Some(dest) = dest {
             let label = get_block(&Label::new(*dest, 0));
 
-            // FIXME: Reg0
-            let b = format!("execute if score %work%0%lo reg matches {}..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy\n", idx, idx, label);
-            dyn_branch.push_str(&b);
+            match BRANCH_CONV {
+                BranchConv::Grid => {
+                    // FIXME: Reg0
+                    let b = format!("execute if score %work%0%lo reg matches {}..{} run setblock !BLOCKPOS!{}! minecraft:redstone_block destroy\n", idx, idx, label);
+                    dyn_branch.push_str(&b);
+                }
+                BranchConv::Direct => {
+                    dyn_branch.push_str(&read_cond());
+                    dyn_branch.push('\n');
+
+                    // FIXME: Reg0
+                    let b = format!("execute if score %%tempcond reg matches {}..{} run function wasm:{}\n", idx, idx, label);
+                    dyn_branch.push_str(&b);
+                }
+                bc => todo!("{:?}", bc)
+            }
         }
+    }
+
+    if BRANCH_CONV == BranchConv::Direct {
+        dyn_branch.push_str(&pop_cond());
+        dyn_branch.push('\n');
     }
 
     // FIXME:
@@ -3450,6 +3897,24 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
 use datapack_vm::interpreter::InterpError;
 
 fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_arity: usize) -> Vec<(i32, Option<i32>)> {
+    match cmd.run_to_end() {
+        Err(InterpError::BreakpointHit) => {
+            let top_func = cmd.get_top_func();
+            compare_states(&mir, &cmd);
+            println!();
+            cmd.finish_unwind(top_func);
+
+            if cmd.halted() {
+                panic!();
+            }
+        }
+        Ok(()) => {
+            panic!();
+        }
+        Err(e) => todo!("{:?}", e)
+    }
+
+
     loop {
         //println!("Stepping MIR, pc is {:?}", mir.pc);
 
@@ -3459,6 +3924,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_arity: usize)
             Err(InterpError::BreakpointHit) => {
                 let top_func = cmd.get_top_func();
                 compare_states(&mir, &cmd);
+                println!();
                 cmd.finish_unwind(top_func);
 
                 if cmd.halted() {
@@ -3591,7 +4057,8 @@ mod test {
     fn test_whole_program2(path: &Path, expected: (i32, Option<i32>)) {
 
         let file = std::fs::read(path).unwrap();
-        let wasm_file = parse_wasm_file(&file);
+        let mut wasm_file = parse_wasm_file(&file);
+        link_intrinsics(&mut wasm_file);
 
         let basic_blocks = compile(&wasm_file);
 
@@ -3878,7 +4345,8 @@ mod test {
 
 
     fn load_state(data: &[u8]) -> TestState {
-        let wasm_file = parse_wasm_file(data);
+        let mut wasm_file = parse_wasm_file(data);
+        link_intrinsics(&mut wasm_file);
 
         let basic_blocks = compile(&wasm_file);
 
@@ -4175,6 +4643,7 @@ mod test {
 
             match s {
                 SExpr::AssertReturn(lhs, rhs) => {
+                    println!("\n=========");
                     println!("Assert return {:?} {:?}", lhs, rhs);
                     let l = self.eval_expr(&lhs);
 
@@ -4193,6 +4662,7 @@ mod test {
                 }
                 SExpr::Node { name, .. } if name == "assert_malformed" => {}
                 SExpr::Node { name, .. } if name == "assert_invalid" => {}
+                SExpr::Node { name, .. } if name == "assert_exhaustion" => {}
                 _ => todo!("{:?}", s)
             }
         }

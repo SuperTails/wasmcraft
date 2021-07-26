@@ -1,0 +1,1 @@
+for f in ./intrinsic/i64divrem/*.mcfunction ; do sed -i -E 's/function wasm:(.*)/function intrinsic:i64divrem\/\1/' $f ; done

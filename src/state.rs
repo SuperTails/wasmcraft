@@ -1,4 +1,5 @@
 use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, TableList};
+use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
 use wasmparser::{TableType, Type};
 use std::convert::TryFrom;
@@ -55,7 +56,11 @@ impl RegFile {
     pub fn get_i64(&self, reg: Register) -> i64 {
         let (lo, hi) = self.get_pair(reg);
 
-        (lo as i64) | ((hi as i64) << 32)
+        let val = (lo as u32 as u64 as i64) | ((hi as i64) << 32);
+
+        println!("lo: {:#X} hi: {:#X} val: {:#X}", lo, hi, val);
+
+        val
     }
 
     pub fn set_half(&mut self, reg: HalfRegister, value: i32) {
@@ -78,17 +83,39 @@ impl RegFile {
     }
 }
 
-pub(crate) struct State {
-	pub pc: (usize, usize),
+pub(crate) struct Pc(Vec<(usize, usize)>);
 
-	bbs: Vec<BasicBlock<Instr>>,
+impl Pc {
+    pub fn jump(&mut self, label: &Label, bbs: &[BasicBlock<Instr>]) {
+        let pos = (State::get_pc(bbs, label), 0);
+        self.jump_to(pos);
+    }
+
+    pub fn jump_to(&mut self, pos: (usize, usize)) {
+        if BRANCH_CONV == BranchConv::Direct {
+            self.incr();
+            self.0.push(pos);
+        } else {
+            *self.0.last_mut().unwrap() = pos;
+        }
+    }
+
+    pub fn incr(&mut self) {
+        self.0.last_mut().unwrap().1 += 1;
+    }
+}
+
+pub(crate) struct State {
+	pub pc: Pc,
+
+	pub bbs: Vec<BasicBlock<Instr>>,
 
 	frames: Vec<Frame>,
 
 	stack: Vec<Value>,
 
     tables: Vec<Table>,
-    
+
     pub memory: Vec<[u8; 65536]>,
 
     pub registers: RegFile,
@@ -130,7 +157,7 @@ impl State {
 
 		State {
 			bbs,
-			pc: (0, 0),
+			pc: Pc(vec![(0, 0)]),
 			frames: Vec::new(),
 			stack: Vec::new(),
             registers: RegFile::new(),
@@ -147,7 +174,7 @@ impl State {
     pub fn enter(&mut self, idx: usize) {
         self.stack.push(Value::I32(-1));
 
-		self.pc = (idx, 0);
+		self.pc = Pc(vec![(idx, 0)]);
     }
 
 	pub fn call(&mut self, idx: usize) {
@@ -157,8 +184,8 @@ impl State {
 		}
 	}
 
-    pub fn get_pc(&self, label: &Label) -> usize {
-        self.bbs.iter().enumerate().find(|(_, b)| {
+    pub fn get_pc(bbs: &[BasicBlock<Instr>], label: &Label) -> usize {
+        bbs.iter().enumerate().find(|(_, b)| {
             &b.label == label
         }).unwrap_or_else(|| {
             eprintln!("Failed to find {:?}", label);
@@ -167,7 +194,16 @@ impl State {
     }
 
     pub fn is_halted(&self) -> bool {
-        self.pc.1 == self.bbs[self.pc.0].instrs.len()
+        self.pc.0.is_empty()
+        //self.pc.1 == self.bbs[self.pc.0].instrs.len()
+    }
+
+    pub fn get_next_instr(&self) -> &Instr {
+        let last_pc = *self.pc.0.last().unwrap();
+
+		let bb = &self.bbs[last_pc.0];
+
+		&bb.instrs[last_pc.1]
     }
 
 	/// Returns true when it ends
@@ -176,11 +212,13 @@ impl State {
 
 		let mut incr_pc = true;
 
-		let bb = &self.bbs[self.pc.0];
+        let last_pc = *self.pc.0.last().unwrap();
 
-		let instr = &bb.instrs[self.pc.1];
+		let bb = &self.bbs[last_pc.0];
 
-        println!("{:?}", instr);
+		let instr = &bb.instrs[last_pc.1];
+
+        println!("RUNNING {:?}", instr);
 
 		match instr {
 			PushFrame(l) => {
@@ -191,7 +229,7 @@ impl State {
                 assert_eq!(f.data.len(), *l as usize);
 			}
 			PushReturnAddress(r) => {
-                let idx = self.get_pc(r);
+                let idx = Self::get_pc(&self.bbs, r);
 
 				self.stack.push(Value::I32(idx as i32));
 			}
@@ -281,6 +319,21 @@ impl State {
                 println!("l: {:#X}, r: {:#X}", l, r);
                 self.registers.set_i32(dst, d as i32);
             }
+            &I64SComp { dst, lhs, op, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+
+                let d = match op {
+                    crate::Relation::LessThan => l < r,
+                    crate::Relation::LessThanEq => l <= r,
+                    crate::Relation::GreaterThan => l > r,
+                    crate::Relation::GreaterThanEq => l >= r,
+                };
+
+                println!("l: {:#X}, r: {:#X}", l, r);
+                self.registers.set_i32(dst, d as i32);
+            }
+
 
             ResetFrames => {
                 todo!()
@@ -457,8 +510,8 @@ impl State {
             }
 
 			RawBranch(l) => {
-                self.pc = (self.get_pc(l), 0);
-				incr_pc = false;
+                self.pc.jump(l, &self.bbs);
+                incr_pc = false;
 			}
             Branch(target) => {
                 let mut params = Vec::new();
@@ -484,7 +537,7 @@ impl State {
                     pop_any_into(&mut self.stack);
                 }
 
-                self.pc = (self.get_pc(&target.label), 0);
+                self.pc.jump(&target.label, &self.bbs);
                 incr_pc = false;
 
                 for (param, ty) in params.into_iter().zip(target.ty.iter()) {
@@ -524,7 +577,7 @@ impl State {
                     pop_any_into(&mut self.stack);
                 }
 
-                self.pc = (self.get_pc(&target.label), 0);
+                self.pc.jump(&target.label, &self.bbs);
                 incr_pc = false;
 
                 for (param, ty) in params.into_iter().zip(target.ty.iter()) {
@@ -573,7 +626,7 @@ impl State {
                     pop_any_into(&mut self.stack);
                 }
 
-                self.pc = (self.get_pc(&target.label), 0);
+                self.pc.jump(&target.label, &self.bbs);
                 incr_pc = false;
 
                 for (param, ty) in params.into_iter().zip(target.ty.iter()) {
@@ -584,6 +637,11 @@ impl State {
             &I32Ctz(reg) => {
                 let mut val = self.registers.get_i32(reg);
                 val = val.trailing_zeros() as i32;
+                self.registers.set_i32(reg, val);
+            }
+            &I32Clz(reg) => {
+                let mut val = self.registers.get_i32(reg);
+                val = val.leading_zeros() as i32;
                 self.registers.set_i32(reg, val);
             }
             &I64Ctz { dst, src } => {
@@ -604,6 +662,31 @@ impl State {
                 let d = l << r;
                 self.registers.set_i64(dst, d);
             }
+            &I64ShrU { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs) as u64;
+                let r = self.registers.get_i64(rhs) as u64;
+                let d = l >> r;
+                self.registers.set_i64(dst, d as i64);
+            }
+            &I64DivU { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs) as u64;
+                let r = self.registers.get_i64(rhs) as u64;
+                let d = l / r;
+                self.registers.set_i64(dst, d as i64);
+            }
+            &I64DivS { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l / r;
+                self.registers.set_i64(dst, d);
+            }
+
+            &I64ShrS { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l >> r;
+                self.registers.set_i64(dst, d);
+            }
             &I32Op { dst, lhs, op, rhs } => {
                 let l = self.registers.get_half(lhs);
                 let r = self.registers.get_half(rhs);
@@ -620,6 +703,7 @@ impl State {
                     "^=" => l ^ r,
                     "shl" => l << r,
                     "shru" => ((l as u32) >> r) as i32,
+                    "shrs" => l >> r,
                     "==" => (l == r) as i32,
                     "!=" => (l != r) as i32,
                     "lts" => (l <  r) as i32,
@@ -632,6 +716,8 @@ impl State {
                     "gtu" => ((l as u32) >  (r as u32)) as i32,
                     o => todo!("{:?}", o),
                 };
+
+                println!("{} {} {}", l, r, d);
 
                 self.registers.set_half(dst, d);
             }
@@ -668,11 +754,11 @@ impl State {
                     a as usize
                 };
 
-                self.pc = (dest_idx, 0);
-
-                println!("Branched to {} {:?}", dest_idx, self.pc);
-
+                self.pc.jump_to((dest_idx, 0));
                 incr_pc = false;
+
+                println!("Branched to {} {:?}", dest_idx, last_pc);
+
             }
 
             Unreachable => {
@@ -688,8 +774,17 @@ impl State {
 		}
 
 		if incr_pc {
-			self.pc.1 += 1;
+            self.pc.incr();
 		}
+
+        while let Some(last_pc) = self.pc.0.last() {
+            if last_pc.1 == self.bbs[last_pc.0].instrs.len() {
+                println!("Popping {:?}", last_pc);
+                self.pc.0.pop();
+            } else {
+                break
+            }
+        }
 
         self.is_halted()
 	}
