@@ -1,4 +1,4 @@
-use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, TableList};
+use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, TableList, WasmValue};
 use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
 use wasmparser::{TableType, Type};
@@ -63,6 +63,14 @@ impl RegFile {
         val
     }
 
+    pub fn get_typed(&self, reg: Register, ty: Type) -> WasmValue {
+        match ty {
+            Type::I32 => WasmValue::I32(self.get_i32(reg)),
+            Type::I64 => WasmValue::I64(self.get_i64(reg)),
+            _ => todo!("{:?}", ty),
+        }
+    }
+
     pub fn set_half(&mut self, reg: HalfRegister, value: i32) {
         self.0.insert(reg, value);
     }
@@ -80,6 +88,15 @@ impl RegFile {
         let lo = value as i32;
         let hi = (value >> 32) as i32;
         self.set_pair(reg, (lo, hi));
+    }
+
+    pub fn clobber_half(&mut self, reg: HalfRegister) {
+        self.0.remove(&reg);
+    }
+
+    pub fn clobber_pair(&mut self, reg: Register) {
+        self.clobber_half(reg.as_lo());
+        self.clobber_half(reg.as_hi());
     }
 }
 
@@ -316,6 +333,12 @@ impl State {
                     crate::Relation::GreaterThanEq => l >= r,
                 };
 
+                // TODO: This should be a part of the instruction, probably?
+                self.registers.clobber_pair(Register::Work(3));
+                self.registers.clobber_pair(Register::Work(4));
+                self.registers.clobber_pair(Register::Work(5));
+                self.registers.clobber_pair(Register::Work(6));
+
                 println!("l: {:#X}, r: {:#X}", l, r);
                 self.registers.set_i32(dst, d as i32);
             }
@@ -469,11 +492,6 @@ impl State {
 
                 self.registers.set_i32(lo, v.0);
                 self.registers.set_i32(hi, v.1);
-            }
-            &PopValueInto(r) => {
-                let v = pop_any_into(&mut self.stack);
-
-                self.registers.set_pair(r, v);
             }
 
             Drop => {
@@ -649,6 +667,11 @@ impl State {
                 val = val.trailing_zeros() as i64;
                 self.registers.set_i64(dst, val);
             }
+            &I64Clz { dst, src } => {
+                let mut val = self.registers.get_i64(src);
+                val = val.leading_zeros() as i64;
+                self.registers.set_i64(dst, val);
+            }
             &I64Add { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
@@ -659,13 +682,14 @@ impl State {
             &I64Shl { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
-                let d = l << r;
+                let d = l.wrapping_shl(r as u32);
                 self.registers.set_i64(dst, d);
             }
             &I64ShrU { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs) as u64;
                 let r = self.registers.get_i64(rhs) as u64;
-                let d = l >> r;
+                let d = l.wrapping_shr(r as u32);
+                println!("l, r, d: {} {} {}", l, r, d);
                 self.registers.set_i64(dst, d as i64);
             }
             &I64DivU { dst, lhs, rhs } => {
@@ -673,18 +697,60 @@ impl State {
                 let r = self.registers.get_i64(rhs) as u64;
                 let d = l / r;
                 self.registers.set_i64(dst, d as i64);
+
+                for i in 0..4 {
+                    self.registers.clobber_pair(Register::Work(i));
+                }
             }
             &I64DivS { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
                 let d = l / r;
                 self.registers.set_i64(dst, d);
+
+                for i in 0..4 {
+                    self.registers.clobber_pair(Register::Work(i));
+                }
+            }
+            &I64RemS { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l % r;
+                self.registers.set_i64(dst, d);
+
+                for i in 0..4 {
+                    self.registers.clobber_pair(Register::Work(i));
+                }
+            }
+            &I64RemU { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs) as u64;
+                let r = self.registers.get_i64(rhs) as u64;
+                let d = l % r;
+                self.registers.set_i64(dst, d as i64);
+
+                for i in 0..4 {
+                    self.registers.clobber_pair(Register::Work(i));
+                }
+            }
+
+            &I64Rotl { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l.rotate_left((r as u32) % 64);
+                self.registers.set_i64(dst, d);
+               
+            }
+            &I64Rotr { dst, lhs, rhs } => {
+                let l = self.registers.get_i64(lhs);
+                let r = self.registers.get_i64(rhs);
+                let d = l.rotate_right((r as u32) % 64);
+                self.registers.set_i64(dst, d);
             }
 
             &I64ShrS { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
-                let d = l >> r;
+                let d = l.wrapping_shr(r as u32);
                 self.registers.set_i64(dst, d);
             }
             &I32Op { dst, lhs, op, rhs } => {
@@ -695,15 +761,25 @@ impl State {
                     "+=" => l.wrapping_add(r),
                     "-=" => l.wrapping_sub(r),
                     "*=" => l.wrapping_mul(r),
-                    "/=" => l.wrapping_div(r),
+                    "/=" => {
+                        self.registers.clobber_half(lhs);
+                        self.registers.clobber_half(rhs);
+                        l.wrapping_div(r)
+                    },
                     "/=u" => ((l as u32) / (r as u32)) as i32,
                     "remu" => ((l as u32) % (r as u32)) as i32,
+                    "rems" => l.wrapping_rem(r),
                     "&=" => l & r,
                     "|=" => l | r,
                     "^=" => l ^ r,
-                    "shl" => l << r,
-                    "shru" => ((l as u32) >> r) as i32,
-                    "shrs" => l >> r,
+                    "shl" => l.wrapping_shl(r as u32),
+                    "shru" => ((l as u32).wrapping_shr(r as u32)) as i32,
+                    "shrs" => {
+                        self.registers.clobber_half(rhs);
+                        l.wrapping_shr(r as u32)
+                    },
+                    "rotl" => l.rotate_left((r as u32) % 32),
+                    "rotr" => l.rotate_right((r as u32) % 32),
                     "==" => (l == r) as i32,
                     "!=" => (l != r) as i32,
                     "lts" => (l <  r) as i32,
@@ -721,6 +797,18 @@ impl State {
 
                 self.registers.set_half(dst, d);
             }
+            &I32Popcnt(reg) => {
+                let v = self.registers.get_half(reg);
+                self.registers.set_half(reg, v.count_ones() as i32);
+            }
+            &I32Extend8S(reg) => {
+                let v = self.registers.get_i32(reg);
+                self.registers.set_i32(reg, v as i8 as i32);
+            }
+            &I32Extend16S(reg) => {
+                let v = self.registers.get_i32(reg);
+                self.registers.set_i32(reg, v as i16 as i32);
+            }
             &I32Eqz { val, cond } => {
                 let v = self.registers.get_i32(val);
                 let c = (v == 0) as i32;
@@ -733,7 +821,7 @@ impl State {
             }
             &AddI32Const(r, rhs) => {
                 let mut lhs = self.registers.get_half(r);
-                lhs += rhs;
+                lhs = lhs.wrapping_add(rhs);
                 self.registers.set_half(r, lhs);
             }
 
@@ -811,7 +899,7 @@ fn pop_i64_into(stack: &mut Vec<Value>) -> (i32, i32) {
 fn pop_ty_into(stack: &mut Vec<Value>, ty: Type) -> (i32, i32) {
     let a = stack.pop().unwrap();
     match (a, ty) {
-        (Value::Any(a, b), ty) => (a, b),
+        (Value::Any(a, b), _) => (a, b),
         (Value::I64(a, b), Type::I64) => (a, b),
         (Value::I32(a), Type::I32) => (a, 0),
         _ => panic!(),

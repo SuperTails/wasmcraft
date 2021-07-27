@@ -136,6 +136,14 @@ execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~ ~
 scoreboard players remove %stackptr wasm 1
 execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
 # I64SComp { dst: Work(2), lhs: Work(0), op: GreaterThan, rhs: Work(1) }
+# I32Op { dst: HalfRegister(Work(2), Lo), lhs: HalfRegister(Work(1), Lo), op: "ltu", rhs: HalfRegister(Work(0), Lo) }
+scoreboard players set %work%2%lo reg 0
+execute if score %work%1%lo reg matches ..-1 if score %work%0%lo reg matches 0.. run scoreboard players set %work%2%lo reg 0
+execute if score %work%1%lo reg matches 0.. if score %work%0%lo reg matches ..-1 run scoreboard players set %work%2%lo reg 1
+execute if score %work%1%lo reg matches ..-1 if score %work%0%lo reg matches ..-1 if score %work%1%lo reg < %work%0%lo reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%1%lo reg matches 0.. if score %work%0%lo reg matches 0.. if score %work%1%lo reg < %work%0%lo reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%1%hi reg < %work%0%hi reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%1%hi reg > %work%0%hi reg run scoreboard players set %work%2%lo reg 0
 # PushI32From(Work(2))
 execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %work%2%lo reg
 execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~ ~
@@ -183,6 +191,7 @@ execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block
 scoreboard players operation %param0%0 reg = %work%0%lo reg
 scoreboard players operation %param0%1 reg = %work%0%hi reg
 scoreboard players operation %param1%0 reg = %work%1%lo reg
+scoreboard players operation %param1%0 reg %= %%64 reg
 function intrinsic:lshr_i64
 scoreboard players operation %work%2%lo reg = %param0%0 reg
 scoreboard players operation %work%2%hi reg = %param0%1 reg
@@ -246,6 +255,14 @@ execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~ ~
 scoreboard players remove %stackptr wasm 1
 execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
 # I64SComp { dst: Work(2), lhs: Work(0), op: LessThan, rhs: Work(1) }
+# I32Op { dst: HalfRegister(Work(2), Lo), lhs: HalfRegister(Work(0), Lo), op: "ltu", rhs: HalfRegister(Work(1), Lo) }
+scoreboard players set %work%2%lo reg 0
+execute if score %work%0%lo reg matches ..-1 if score %work%1%lo reg matches 0.. run scoreboard players set %work%2%lo reg 0
+execute if score %work%0%lo reg matches 0.. if score %work%1%lo reg matches ..-1 run scoreboard players set %work%2%lo reg 1
+execute if score %work%0%lo reg matches ..-1 if score %work%1%lo reg matches ..-1 if score %work%0%lo reg < %work%1%lo reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%0%lo reg matches 0.. if score %work%1%lo reg matches 0.. if score %work%0%lo reg < %work%1%lo reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%0%hi reg < %work%1%hi reg run scoreboard players set %work%2%lo reg 1
+execute if score %work%0%hi reg > %work%1%hi reg run scoreboard players set %work%2%lo reg 0
 # PushI32From(Work(2))
 execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %work%2%lo reg
 execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~ ~

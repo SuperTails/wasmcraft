@@ -29,5 +29,13 @@
 # %param0%0 : a (mutated, also the return value)
 # %param1%0 : shift (clobbered)
 
-execute if score %param1%0 reg matches 32.. run scoreboard players set %param0%0 reg 0
+execute store success score %%templshr_sign reg if score %param0%0 reg matches ..-1
+execute if score %%templshr_sign reg matches 1..1 run scoreboard players remove %param0%0 reg 2147483647
+execute if score %%templshr_sign reg matches 1..1 run scoreboard players remove %param0%0 reg 1
+scoreboard players operation %%templshr_sign reg *= %%1073741824 reg
+
+execute if score %param1%0 reg matches 0..0 run scoreboard players operation %%templshr_sign reg += %%templshr_sign reg
+
 execute if score %param1%0 reg matches 1.. run function intrinsic:lshr/inner
+
+scoreboard players operation %param0%0 reg += %%templshr_sign reg

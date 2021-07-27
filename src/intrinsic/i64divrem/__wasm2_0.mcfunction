@@ -96,6 +96,7 @@ execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block
 scoreboard players operation %param0%0 reg = %work%0%lo reg
 scoreboard players operation %param0%1 reg = %work%0%hi reg
 scoreboard players operation %param1%0 reg = %work%1%lo reg
+scoreboard players operation %param1%0 reg %= %%64 reg
 function intrinsic:ashr_i64
 scoreboard players operation %work%2%lo reg = %param0%0 reg
 scoreboard players operation %work%2%hi reg = %param0%1 reg
@@ -294,6 +295,7 @@ execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block
 scoreboard players operation %param0%0 reg = %work%0%lo reg
 scoreboard players operation %param0%1 reg = %work%0%hi reg
 scoreboard players operation %param1%0 reg = %work%1%lo reg
+scoreboard players operation %param1%0 reg %= %%64 reg
 function intrinsic:ashr_i64
 scoreboard players operation %work%2%lo reg = %param0%0 reg
 scoreboard players operation %work%2%hi reg = %param0%1 reg
