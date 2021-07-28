@@ -803,6 +803,30 @@ impl Instr {
         }
     }
 
+    fn branch_begin(cond: HalfRegister, body: &mut Vec<String>) {
+        if BRANCH_CONV == BranchConv::Direct {
+            body.extend(push_cond(cond));
+        } else {
+            body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
+        }
+    }
+
+    fn branch_arm(cond: &str, target: &BranchTarget, body: &mut Vec<String>, global_list: &GlobalList) {
+        let mut true_code = Instr::branch(target, global_list);
+        Instr::add_condition(&mut true_code, cond);
+        body.extend(true_code);
+
+        if BRANCH_CONV == BranchConv::Direct {
+            body.push(read_cond());
+        }
+    }
+
+    fn branch_end(body: &mut Vec<String>) {
+        if BRANCH_CONV == BranchConv::Direct {
+            body.push(pop_cond());
+        }
+    }
+
     fn branch(target: &BranchTarget, global_list: &GlobalList) -> Vec<String> {
         let mut body = Vec::new();
 
@@ -1307,61 +1331,34 @@ impl Instr {
             BranchIf { t_name, f_name, cond } => {
                 body.push(format!("#   {:?}", self));
 
-                if BRANCH_CONV == BranchConv::Direct {
-                    body.extend(push_cond(cond.as_lo()));
-                } else {
-                    body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond.as_lo()));
-                }
-
-                let mut true_code = Instr::branch(t_name, global_list);
-                Instr::add_condition(&mut true_code, "execute unless score %%tempcond reg matches 0..0 run ");
-                body.extend(true_code);
-
-                if BRANCH_CONV == BranchConv::Direct {
-                    body.push(read_cond());
-                }
-
-                let mut false_code = Instr::branch(f_name, global_list);
-                Instr::add_condition(&mut false_code, "execute if score %%tempcond reg matches 0..0 run ");
-                body.extend(false_code);
-                
-                if BRANCH_CONV == BranchConv::Direct {
-                    body.push(pop_cond());
-                }
+                Instr::branch_begin(cond.as_lo(), body);
+                Instr::branch_arm("execute unless score %%tempcond reg matches 0..0 run ", t_name, body, global_list);
+                Instr::branch_arm("execute if score %%tempcond reg matches 0..0 run ", f_name, body, global_list);
+                Instr::branch_end(body);
             }
             BranchTable { reg, targets, default } => {
                 if targets.is_empty() {
                     body.extend(Instr::branch(default.as_ref().unwrap(), global_list));
                 } else {
-                    if BRANCH_CONV == BranchConv::Direct {
-                        body.extend(push_cond(reg.as_lo()));
-                    } else {
-                        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", reg.as_lo()));
-                    }
+                    Instr::branch_begin(reg.as_lo(), body);
 
                     for (idx, target) in targets.iter().enumerate() {
-                        let mut code = Instr::branch(target, global_list);
-                        Instr::add_condition(&mut code, &format!("execute if score %%tempcond reg matches {}..{} run ", idx, idx));
-                        body.extend(code);
+                        let cond = format!("execute if score %%tempcond reg matches {}..{} run ", idx, idx);
 
-                        if BRANCH_CONV == BranchConv::Direct {
-                            body.push(read_cond());
-                        }
+                        Instr::branch_arm(&cond, target, body, global_list);
                     }
 
                     if let Some(default) = default {
-                        let mut code = Instr::branch(default, global_list);
-                        Instr::add_condition(&mut code, &format!("execute unless score %%tempcond reg matches 0..{} run ", targets.len() - 1));
-                        body.extend(code);
+                        let cond = format!("execute unless score %%tempcond reg matches 0..{} run ", targets.len() - 1);
+
+                        Instr::branch_arm(&cond, default, body, global_list);
                     } else {
                         let mut s = format!("execute unless score %%tempcond reg matches 0..{} run ", targets.len() - 1);
                         s.push_str(r#"tellraw @a [{"text":"Attempt to branch to invalid function "},{"score":{"name":"%work%0%lo","objective":"reg"}}]"#);
                         body.push(s);
                     }
-                    
-                    if BRANCH_CONV == BranchConv::Direct {
-                        body.push(pop_cond());
-                    }
+
+                    Instr::branch_end(body);
                 }
             }
 

@@ -698,27 +698,27 @@ impl State {
                 let d = l / r;
                 self.registers.set_i64(dst, d as i64);
 
-                for i in 0..4 {
+                for i in 0..6 {
                     self.registers.clobber_pair(Register::Work(i));
                 }
             }
             &I64DivS { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
-                let d = l / r;
+                let d = l.wrapping_div(r);
                 self.registers.set_i64(dst, d);
 
-                for i in 0..4 {
+                for i in 0..6 {
                     self.registers.clobber_pair(Register::Work(i));
                 }
             }
             &I64RemS { dst, lhs, rhs } => {
                 let l = self.registers.get_i64(lhs);
                 let r = self.registers.get_i64(rhs);
-                let d = l % r;
+                let d = l.wrapping_rem(r);
                 self.registers.set_i64(dst, d);
 
-                for i in 0..4 {
+                for i in 0..6 {
                     self.registers.clobber_pair(Register::Work(i));
                 }
             }
@@ -728,7 +728,7 @@ impl State {
                 let d = l % r;
                 self.registers.set_i64(dst, d as i64);
 
-                for i in 0..4 {
+                for i in 0..6 {
                     self.registers.clobber_pair(Register::Work(i));
                 }
             }
