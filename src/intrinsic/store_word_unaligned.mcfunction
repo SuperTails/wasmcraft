@@ -2,6 +2,8 @@
 # %ptr      - Address to store at
 # %param0%0 - Word to be stored
 
+tellraw @a [{"text":"storing unaligned word"}]
+
 scoreboard players operation %%temp0_swu reg = %param0%0 reg
 
 # FIXME: This may not actually work like an `and`

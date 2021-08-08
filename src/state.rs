@@ -18,7 +18,6 @@ impl Frame {
 enum Value {
 	I32(i32),
     I64(i32, i32),
-    Any(i32, i32),
 }
 
 pub(crate) struct Table {
@@ -100,7 +99,7 @@ impl RegFile {
     }
 }
 
-pub(crate) struct Pc(Vec<(usize, usize)>);
+pub(crate) struct Pc(pub Vec<(usize, usize)>);
 
 impl Pc {
     pub fn jump(&mut self, label: &Label, bbs: &[BasicBlock<Instr>]) {
@@ -119,6 +118,17 @@ impl Pc {
 
     pub fn incr(&mut self) {
         self.0.last_mut().unwrap().1 += 1;
+    }
+
+    pub fn unwind(&mut self, bbs: &[BasicBlock<Instr>]) {
+        while let Some(last_pc) = self.0.last() {
+            if last_pc.1 == bbs[last_pc.0].instrs.len() {
+                println!("Popping {:?}", last_pc);
+                self.0.pop();
+            } else {
+                break
+            }
+        }
     }
 }
 
@@ -146,14 +156,6 @@ pub(crate) struct State {
     memory_ptr: u32,
 
     turtle: (i32, i32, i32),
-}
-
-fn set_reg_i32(registers: &mut HashMap<Register, (i32, i32)>, reg: Register, value: i32) {
-    registers.entry(reg).or_insert((0, 0)).0 = value;
-}
-
-fn set_reg_i64(registers: &mut HashMap<Register, (i32, i32)>, reg: Register, value: (i32, i32)) {
-    registers.insert(reg, value);
 }
 
 impl State {
@@ -527,10 +529,6 @@ impl State {
                 self.registers.set_i32(dst, d as i32);
             }
 
-			RawBranch(l) => {
-                self.pc.jump(l, &self.bbs);
-                incr_pc = false;
-			}
             Branch(target) => {
                 let mut params = Vec::new();
                 for ty in target.ty.iter().rev() {
@@ -594,6 +592,8 @@ impl State {
                 for _ in 0..target.to_pop {
                     pop_any_into(&mut self.stack);
                 }
+
+                println!("Branched to {:?}", target.label);
 
                 self.pc.jump(&target.label, &self.bbs);
                 incr_pc = false;
@@ -836,6 +836,8 @@ impl State {
                     self.bbs.iter().enumerate().find(|(_, bb)| bb.label.func_idx == func_idx).unwrap().0
                 } else {
                     if a == -1 {
+                        self.pc.incr();
+                        self.pc.unwind(&self.bbs);
                         return true;
                     }
 
@@ -865,14 +867,7 @@ impl State {
             self.pc.incr();
 		}
 
-        while let Some(last_pc) = self.pc.0.last() {
-            if last_pc.1 == self.bbs[last_pc.0].instrs.len() {
-                println!("Popping {:?}", last_pc);
-                self.pc.0.pop();
-            } else {
-                break
-            }
-        }
+        self.pc.unwind(&self.bbs);
 
         self.is_halted()
 	}
@@ -881,7 +876,6 @@ impl State {
 fn pop_i32_into(stack: &mut Vec<Value>) -> i32 {
     let a = stack.pop().unwrap();
     match a {
-        Value::Any(v, _) => v,
         Value::I32(v) => v,
         Value::I64(_, _) => panic!(),
     }
@@ -890,7 +884,6 @@ fn pop_i32_into(stack: &mut Vec<Value>) -> i32 {
 fn pop_i64_into(stack: &mut Vec<Value>) -> (i32, i32) {
     let a = stack.pop().unwrap();
     match a {
-        Value::Any(lo, hi) => (lo, hi),
         Value::I64(lo, hi) => (lo, hi),
         Value::I32(_) => panic!(),
     }
@@ -899,7 +892,6 @@ fn pop_i64_into(stack: &mut Vec<Value>) -> (i32, i32) {
 fn pop_ty_into(stack: &mut Vec<Value>, ty: Type) -> (i32, i32) {
     let a = stack.pop().unwrap();
     match (a, ty) {
-        (Value::Any(a, b), _) => (a, b),
         (Value::I64(a, b), Type::I64) => (a, b),
         (Value::I32(a), Type::I32) => (a, 0),
         _ => panic!(),
@@ -909,7 +901,6 @@ fn pop_ty_into(stack: &mut Vec<Value>, ty: Type) -> (i32, i32) {
 fn pop_any_into(stack: &mut Vec<Value>) -> (i32, i32) {
     let a = stack.pop().unwrap();
     match a {
-        Value::Any(a, b) => (a, b),
         Value::I64(a, b) => (a, b),
         Value::I32(a) => (a, 0),
     }
