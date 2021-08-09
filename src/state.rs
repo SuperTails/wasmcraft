@@ -1,7 +1,7 @@
-use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, TableList, WasmValue};
+use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue};
 use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
-use wasmparser::{TableType, Type};
+use wasmparser::Type;
 use std::convert::TryFrom;
 
 struct Frame {
@@ -22,12 +22,6 @@ enum Value {
 
 pub(crate) struct Table {
     pub elements: Vec<Option<CodeFuncIdx>>,
-}
-
-impl Table {
-    pub fn new(ty: TableType) -> Self {
-        todo!()
-    }
 }
 
 pub(crate) struct RegFile(pub HashMap<HalfRegister, i32>);
@@ -196,13 +190,6 @@ impl State {
 		self.pc = Pc(vec![(idx, 0)]);
     }
 
-	pub fn call(&mut self, idx: usize) {
-        self.enter(idx);
-		loop {
-			if self.step() { break }
-		}
-	}
-
     pub fn get_pc(bbs: &[BasicBlock<Instr>], label: &Label) -> usize {
         bbs.iter().enumerate().find(|(_, b)| {
             &b.label == label
@@ -215,14 +202,6 @@ impl State {
     pub fn is_halted(&self) -> bool {
         self.pc.0.is_empty()
         //self.pc.1 == self.bbs[self.pc.0].instrs.len()
-    }
-
-    pub fn get_next_instr(&self) -> &Instr {
-        let last_pc = *self.pc.0.last().unwrap();
-
-		let bb = &self.bbs[last_pc.0];
-
-		&bb.instrs[last_pc.1]
     }
 
 	/// Returns true when it ends

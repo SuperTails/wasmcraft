@@ -1,7 +1,7 @@
 mod datapack;
 mod state;
 
-use datapack_vm::cir::{Function, FunctionId, ScoreHolder};
+use datapack_vm::cir::{Function, FunctionId, Objective, ScoreHolder};
 use datapack_vm::interpreter::Interpreter;
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
@@ -864,7 +864,8 @@ impl Instr {
                     "scoreboard players add %cmdcount wasm !COMMANDCOUNT!!".to_string(),
 
                     // Reset next command to break the chain
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
+                    //"execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
+                    "execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string(),
                     // Set nextchain to the temporary chain block
                     "execute if score %cmdcount wasm >= %maxcmdcount wasm as @e[tag=nextchain] run tp @s 1 1 -1".to_string(),
                 ]
@@ -891,7 +892,10 @@ impl Instr {
         match BRANCH_CONV {
             BranchConv::Grid | BranchConv::Loop | BranchConv::Direct => { Vec::new() }
             BranchConv::Chain => {
-                vec!["execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()]
+                vec![
+                    //"execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()
+                    "execute at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string()
+                ]
             }
         }
     }
@@ -2284,10 +2288,6 @@ impl FuncBodyStream {
                 self.load_i64_sized_s(memarg, &wasm_file.memory, Instr::LoadI32);
             }
 
-            MemoryGrow { mem, mem_byte } => {
-                println!("FIXME: MEMORY GROW");
-            }
-
             End => {
                 let needs_else = self.flow_stack.0.last().unwrap().else_block.is_some();
                 if needs_else {
@@ -3190,6 +3190,10 @@ impl MemoryList {
         for m in self.memory.iter() {
             match m {
                 MemoryType::M32 { limits, shared } => {
+                    if *shared {
+                        todo!()
+                    }
+
                     /*if limits.maximum.is_none() {
                         todo!()
                     }
@@ -3333,7 +3337,7 @@ impl<'a> ExportList<'a> {
     }
 }
 
-fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>, wasm_file: &WasmFile) {
+fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>) {
     let datapack = datapack::Datapack::new();
 
     datapack.save(folder_path).unwrap();
@@ -3442,7 +3446,7 @@ pub fn run(run_options: &RunOptions) {
 
     let folder_path = run_options.out_path.as_deref().unwrap_or_else(|| Path::new("../out"));
 
-    save_datapack(folder_path, mc_functions.clone(), &wasm_file);
+    save_datapack(folder_path, mc_functions.clone());
 
     if VERIFY_OUTPUT {
         let result = run_and_compare(&basic_blocks, &mc_functions, &wasm_file);
@@ -3464,7 +3468,7 @@ fn read_function(path: &Path, id: FunctionId) -> Function {
     Function::from_str(id, &contents).unwrap()
 }
 
-fn prepare_interp(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList) -> Interpreter {
+fn prepare_interp(mc_functions: &[(String, String)]) -> Interpreter {
     let mut funcs = mc_functions.iter()
         .map(|(n, c)| {
             // FIXME: Namespace
@@ -3500,23 +3504,11 @@ fn prepare_interp(mc_functions: &[(String, String)], globals: &GlobalList, memor
             let name = name.to_string_lossy();
             let name = &name[..name.len() - ".mcfunction".len()];
 
-            let contents = std::fs::read_to_string(entry.path()).unwrap();
-
             let id = FunctionId::new(format!("intrinsic:{}", name));
             
             funcs.push(read_function(&entry.path(), id));
         }
     }
-
-
-    /*let label = wasm_file.exports.get_func("_start");
-    let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
-            n == &format!("__wasm{}_0", label.0)
-        }).unwrap_or_else(|| {
-            eprintln!("Failed to find {:?}", label);
-            panic!();
-        }).0;
-    */
 
     let idx = mc_functions.iter().enumerate().find(|(_, (n, _))| {
             n == "setup"
@@ -3525,7 +3517,7 @@ fn prepare_interp(mc_functions: &[(String, String)], globals: &GlobalList, memor
             panic!();
         }).0;
 
-    let mut i = datapack_vm::Interpreter::new_wasm(funcs, idx, "");
+    let mut i = datapack_vm::Interpreter::new(funcs, idx);
 
     i.run_to_end().unwrap();
 
@@ -3544,7 +3536,7 @@ fn set_interp_pos(interp: &mut Interpreter, mc_functions: &[(String, String)], n
 }
 
 fn setup_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory: &MemoryList, exports: &ExportList) -> Interpreter {
-    let mut i = prepare_interp(mc_functions, globals, memory);
+    let mut i = prepare_interp(mc_functions);
 
     set_interp_pos(&mut i, mc_functions, "_start");
 
@@ -4099,9 +4091,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
             // Start block
             setup.push_str("setblock 0 0 -1 minecraft:command_block[facing=east]{Command:\"function wasm:setupchain\"} replace\n");
             // Temporary block
-            setup.push_str("setblock 1 1 -1 minecraft:chain_command_block[facing=east,conditional=true]{UpdateLastExecution:0b,auto:1b} replace\n");
-            // Second chain block
-            setup.push_str("setblock 2 0 -1 minecraft:chain_command_block[facing=west,conditional=true]{UpdateLastExecution:0b,auto:1b} replace\n");
+            setup.push_str("setblock 1 1 -1 minecraft:chain_command_block[facing=east,conditional=false]{UpdateLastExecution:0b,auto:1b} replace\n");
         }
         BranchConv::Direct => {}
         bc => todo!("{:?}", bc)
@@ -4121,9 +4111,14 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
         setup_chain.push_str("scoreboard players set %cmdcount wasm 0\n");
         // Setup the next chain pointer
         setup_chain.push_str("execute as @e[tag=nextchain] run tp @s 2 0 -1\n");
+
         // Replace the first chain block with the temporary chain block
         setup_chain.push_str("setblock ~1 ~ ~ minecraft:air replace\n");
-        setup_chain.push_str("clone ~1 ~1 ~ ~1 ~1 ~ ~1 ~ ~");
+        setup_chain.push_str("clone ~1 ~1 ~ ~1 ~1 ~ ~1 ~ ~\n");
+
+        // Second chain block
+        setup_chain.push_str("setblock 2 0 -1 minecraft:air replace\n");
+        setup_chain.push_str("setblock 2 0 -1 minecraft:chain_command_block[facing=west,conditional=false]{UpdateLastExecution:0b,auto:1b} replace\n");
 
         mc_functions.push(("setupchain".to_string(), setup_chain));
     }
@@ -4204,7 +4199,7 @@ fn create_return_jumper(basic_blocks: &[BasicBlock<Instr>]) -> String {
         })
         .collect::<Vec<_>>();
     
-    let targets = targets.iter().map(|t| Some(t));
+    let targets = targets.iter().map(Some);
 
     let mut dyn_branch = Vec::new();
     Instr::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
@@ -4311,7 +4306,7 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
 
     let mc_functions = [("setup".to_string(), setup)];
 
-    let mut interp = prepare_interp(&mc_functions, &globals, &memory);
+    let mut interp = prepare_interp(&mc_functions);
 
     let idx = interp.program.iter().enumerate().find(|(_, f)| {
         if let Some(stripped) = f.id.name.strip_prefix("intrinsic:") {
@@ -4321,7 +4316,8 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
         }
     }).unwrap().0;
 
-    let obj = "reg".to_string();
+    let obj = Objective::new("reg".to_string()).unwrap();
+
     for (name, val) in params {
         let holder = ScoreHolder::new(name.to_string()).unwrap();
         interp.scoreboard.set(&holder, &obj, *val);
@@ -4904,7 +4900,6 @@ mod test {
         let val1_bts = val1.to_le_bytes();
 
         let val2 = 0x12_34_56_78_i32;
-        let val2_bts = val2.to_le_bytes();
 
         let prelude = vec![
             Instr::PushI32Const(4),
@@ -5032,7 +5027,7 @@ mod test {
         let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
         let state = prepare_state(&basic_blocks, &wasm_file);
-        let interp = prepare_interp(&mc_functions, &wasm_file.globals, &wasm_file.memory);
+        let interp = prepare_interp(&mc_functions);
 
         //save_datapack(Path::new("../out"), mc_functions.clone(), &wasm_file);
     
@@ -5231,7 +5226,7 @@ mod test {
     impl std::str::FromStr for SExpr {
         type Err = String;
 
-        fn from_str(mut s: &str) -> Result<Self, Self::Err> {
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
             SExprParser::new(s).parse()
         }
     }
@@ -5287,12 +5282,12 @@ mod test {
                             [WasmValue::I32(arg)] => {
                                 self.state.registers.set_i32(Register::Param(idx as u32), *arg);
                                 let holder = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
-                                let obj = "reg".to_string();
+                                let obj = Objective::new("reg".to_string()).unwrap();
                                 self.interp.scoreboard.set(&holder, &obj, *arg);
                             }
                             [WasmValue::I64(arg)] => {
                                 self.state.registers.set_i64(Register::Param(idx as u32), *arg);
-                                let obj = "reg".to_string();
+                                let obj = Objective::new("reg".to_string()).unwrap();
                                 let holder_lo = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
                                 let arg_lo = *arg as i32;
                                 self.interp.scoreboard.set(&holder_lo, &obj, arg_lo);
@@ -5339,7 +5334,7 @@ mod test {
                     }
                 }
                 SExpr::AssertTrap(lhs, error) => {
-                    println!("TODO: ASSERT TRAP");
+                    println!("TODO: ASSERT TRAP {:?} {:?}", lhs, error);
                 }
                 SExpr::Node { name, .. } if name == "assert_malformed" => {}
                 SExpr::Node { name, .. } if name == "assert_invalid" => {}
