@@ -485,6 +485,8 @@ execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1
 execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
 # Comment("Loop { ty: Type(EmptyBlockType) }")
 # Loop { ty: Type(EmptyBlockType) }
-# RawBranch(Label { func_idx: CodeFuncIdx(2), idx: 3 })
+# Branch(BranchTarget { label: Label { func_idx: CodeFuncIdx(2), idx: 3 }, to_pop: 0, ty: [] })
+#   Branch to __wasm2_3
 #   Jump to __wasm2_3
 function intrinsic:i64divrem/__wasm2_3
+scoreboard players set %%taken wasm 1

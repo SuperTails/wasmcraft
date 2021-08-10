@@ -792,16 +792,12 @@ scoreboard players remove %stackptr wasm 2
 execute at @e[tag=stackptr] store result score %work%0%lo reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
 # BranchIf { t_name: BranchTarget { label: Label { func_idx: CodeFuncIdx(3), idx: 3 }, to_pop: 0, ty: [] }, f_name: BranchTarget { label: Label { func_idx: CodeFuncIdx(3), idx: 4 }, to_pop: 0, ty: [] }, cond: Work(0) }
 #   BranchIf { t_name: BranchTarget { label: Label { func_idx: CodeFuncIdx(3), idx: 3 }, to_pop: 0, ty: [] }, f_name: BranchTarget { label: Label { func_idx: CodeFuncIdx(3), idx: 4 }, to_pop: 0, ty: [] }, cond: Work(0) }
+scoreboard players set %%taken wasm 0
 scoreboard players operation %%tempcond reg = %work%0%lo reg
-execute at @e[tag=condstackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %%tempcond reg
-execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~1 ~ ~
 #   Branch to __wasm3_3
-# RawBranch(Label { func_idx: CodeFuncIdx(3), idx: 3 })
 #   Jump to __wasm3_3
-execute unless score %%tempcond reg matches 0..0 run function intrinsic:i64divrem/__wasm3_3
-execute at @e[tag=condstackptr] store result score %%tempcond reg run data get block ~-1 ~ ~ RecordItem.tag.Memory 1
+execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run function intrinsic:i64divrem/__wasm3_3
 #   Branch to __wasm3_4
-# RawBranch(Label { func_idx: CodeFuncIdx(3), idx: 4 })
 #   Jump to __wasm3_4
-execute if score %%tempcond reg matches 0..0 run function intrinsic:i64divrem/__wasm3_4
-execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~-1 ~ ~
+execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run function intrinsic:i64divrem/__wasm3_4
+scoreboard players set %%taken wasm 1

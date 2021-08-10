@@ -1,7 +1,10 @@
 mod datapack;
 mod state;
+mod sexpr;
 
-use datapack_vm::cir::{Function, FunctionId, Objective, ScoreHolder};
+use datapack_common::functions::{Command, Function, Objective, ScoreHolder};
+use datapack_common::functions::FunctionIdent as FunctionId;
+
 use datapack_vm::interpreter::Interpreter;
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
@@ -93,7 +96,9 @@ impl BasicBlock<Instr> {
             body.pop();
         }
 
-        body.push(format!("tellraw @a [{{\"text\": \"finished {:?}!\"}}]", self.label));
+        if BRANCH_CONV == BranchConv::Direct {
+            body.push("scoreboard players set %%taken wasm 1".to_string());
+        }
 
         BasicBlock {
             label: self.label.clone(),
@@ -110,7 +115,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Chain;
+const BRANCH_CONV: BranchConv = BranchConv::Direct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -307,22 +312,6 @@ enum Instr {
     SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
-}
-
-fn push_cond(reg: HalfRegister) -> Vec<String> {
-    vec![
-        format!("scoreboard players operation %%tempcond reg = {} reg", reg),
-        "execute at @e[tag=condstackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %%tempcond reg".to_string(),
-        "execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~1 ~ ~".to_string(),
-    ]
-}
-
-fn read_cond() -> String {
-    "execute at @e[tag=condstackptr] store result score %%tempcond reg run data get block ~-1 ~ ~ RecordItem.tag.Memory 1".to_string()
-}
-
-fn pop_cond() -> String {
-    "execute at @e[tag=condstackptr] as @e[tag=condstackptr] run tp @s ~-1 ~ ~".to_string()
 }
 
 #[derive(Debug)]
@@ -824,10 +813,10 @@ impl Instr {
 
     fn branch_begin(cond: HalfRegister, body: &mut Vec<String>) {
         if BRANCH_CONV == BranchConv::Direct {
-            body.extend(push_cond(cond));
-        } else {
-            body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
+            body.push("scoreboard players set %%taken wasm 0".to_string());
         }
+
+        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
 
         body.extend(Instr::jump_begin());
     }
@@ -841,17 +830,9 @@ impl Instr {
 
         Instr::add_condition(&mut true_code, cond);
         body.extend(true_code);
-
-        if BRANCH_CONV == BranchConv::Direct {
-            body.push(read_cond());
-        }
     }
 
     fn branch_end(body: &mut Vec<String>) {
-        if BRANCH_CONV == BranchConv::Direct {
-            body.push(pop_cond());
-        }
-
         body.extend(Instr::jump_end());
     }
 
@@ -990,12 +971,12 @@ impl Instr {
             Instr::branch_begin(reg.as_lo(), body);
 
             for (idx, target) in targets.enumerate() {
-                let cond = format!("execute if score %%tempcond reg matches {}..{} run ", idx, idx);
+                let cond = format!("execute if score %%taken wasm matches 0 if score %%tempcond reg matches {}..{} run ", idx, idx);
 
                 Instr::branch_arm(&cond, target, body);
             }
 
-            let cond = format!("execute unless score %%tempcond reg matches 0..{} run ", num_targets - 1);
+            let cond = format!("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..{} run ", num_targets - 1);
             Instr::branch_arm(&cond, default, body);
 
             Instr::branch_end(body);
@@ -1460,8 +1441,8 @@ impl Instr {
                 body.push(format!("#   {:?}", self));
 
                 Instr::branch_begin(cond.as_lo(), body);
-                Instr::branch_arm("execute unless score %%tempcond reg matches 0..0 run ", Some(t_name), body);
-                Instr::branch_arm("execute if score %%tempcond reg matches 0..0 run ", Some(f_name), body);
+                Instr::branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name), body);
+                Instr::branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name), body);
                 Instr::branch_end(body);
             }
             BranchTable { reg, targets, default } => {
@@ -3438,7 +3419,7 @@ pub fn run(run_options: &RunOptions) {
 
     let basic_blocks = compile(&wasm_file);
 
-    let mc_functions = assemble(&basic_blocks, &wasm_file, !VERIFY_OUTPUT);
+    let mc_functions = assemble(&basic_blocks, &wasm_file, VERIFY_OUTPUT);
 
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
@@ -3463,20 +3444,35 @@ fn run_commands(mc_functions: &[(String, String)], globals: &GlobalList, memory:
     cmd
 }
 
+fn parse_function(id: FunctionId, contents: &str) -> Function {
+    let cmds = contents.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            l.parse::<Command>().unwrap_or_else(|e| {
+                panic!("failed to parse {}: {:?}", l, e)
+            })
+        }).collect::<Vec<_>>();
+
+    Function { id, cmds }
+}
+
 fn read_function(path: &Path, id: FunctionId) -> Function {
     let contents = std::fs::read_to_string(path).unwrap();
-    Function::from_str(id, &contents).unwrap()
+    parse_function(id, &contents)
 }
 
 fn prepare_interp(mc_functions: &[(String, String)]) -> Interpreter {
     let mut funcs = mc_functions.iter()
         .map(|(n, c)| {
-            // FIXME: Namespace
-            let id = FunctionId::new(format!("wasm:{}", n.clone()));
+            let id = FunctionId {
+                namespace: "wasm".into(),
+                path: n.clone(),
+            };
 
-            println!("Converting {}", id.name);
+            println!("Converting {}", id.path);
 
-            Function::from_str(id, c).unwrap()
+            parse_function(id, c)
         })
         .collect::<Vec<_>>();
     
@@ -3494,7 +3490,10 @@ fn prepare_interp(mc_functions: &[(String, String)]) -> Interpreter {
                     let n = format!("{}/{}", p.to_string_lossy(), n.to_string_lossy());
                     let n = &n[..n.len() - ".mcfunction".len()];
 
-                    let id = FunctionId::new(format!("intrinsic:{}", n));
+                    let id = FunctionId {
+                        namespace: "intrinsic".into(),
+                        path: n.to_string(),
+                    };
 
                     funcs.push(read_function(&in_entry.path(), id));
                 }
@@ -3504,7 +3503,10 @@ fn prepare_interp(mc_functions: &[(String, String)]) -> Interpreter {
             let name = name.to_string_lossy();
             let name = &name[..name.len() - ".mcfunction".len()];
 
-            let id = FunctionId::new(format!("intrinsic:{}", name));
+            let id = FunctionId {
+                namespace: "intrinsic".into(),
+                path: name.to_string(),
+            };
             
             funcs.push(read_function(&entry.path(), id));
         }
@@ -4009,7 +4011,6 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
     kill @e[tag=stackptr]\n\
     kill @e[tag=globalptr]\n\
     kill @e[tag=turtle]\n\
-    kill @e[tag=condstackptr]\n\
     kill @e[tag=nextchain]\n\
     \n\
     # Add armor stand pointers\n\
@@ -4017,7 +4018,6 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
-    summon minecraft:armor_stand 0 3 0 {Marker:1b,Tags:[\"condstackptr\"],CustomName:'\"condstackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 1 1 -1 {Marker:1b,Tags:[\"nextchain\"],CustomName:'\"nextchain\"',CustomNameVisible:1b}\n\
@@ -4263,7 +4263,6 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     kill @e[tag=stackptr]\n\
     kill @e[tag=globalptr]\n\
     kill @e[tag=turtle]\n\
-    kill @e[tag=condstackptr]\n\
     kill @e[tag=nextchain]\n\
     \n\
     # Add armor stand pointers\n\
@@ -4271,7 +4270,6 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
-    summon minecraft:armor_stand 0 3 0 {Marker:1b,Tags:[\"condstackptr\"],CustomName:'\"condstackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 1 1 -1 {Marker:1b,Tags:[\"nextchain\"],CustomName:'\"nextchain\"',CustomNameVisible:1b}\n\
@@ -4309,11 +4307,7 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     let mut interp = prepare_interp(&mc_functions);
 
     let idx = interp.program.iter().enumerate().find(|(_, f)| {
-        if let Some(stripped) = f.id.name.strip_prefix("intrinsic:") {
-            stripped == name
-        } else {
-            false
-        }
+        &*f.id.namespace == "intrinsic" && f.id.path == name
     }).unwrap().0;
 
     let obj = Objective::new("reg".to_string()).unwrap();
@@ -4562,7 +4556,7 @@ fn compare_states(mir: &State, cmd: &Interpreter) {
     let obj = cmd.scoreboard.0.get("reg").unwrap();
 
     for (&reg, &mir_value) in mir.registers.0.iter() {
-        let holder = datapack_vm::cir::ScoreHolder::new(reg.to_string()).unwrap();
+        let holder = ScoreHolder::new(reg.to_string()).unwrap();
         let cmd_value = obj.get(&holder).copied();
 
         if Some(mir_value) != cmd_value {
@@ -5044,192 +5038,6 @@ mod test {
     }
     */
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum SExprToken {
-        StrLit(String),
-        IntLit(i64),
-        Ident(String),
-        OpenParen,
-        CloseParen,
-    }
-
-    struct SExprLexer<'a> {
-        s: &'a str
-    }
-
-    impl Iterator for SExprLexer<'_> {
-        type Item = SExprToken;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            while self.s.chars().next().unwrap().is_whitespace() {
-                let mut indices = self.s.char_indices();
-                indices.next();
-                self.s = &self.s[indices.next().unwrap().0..];
-            }
-
-            if self.s.is_empty() {
-                None
-            } else if self.s.starts_with('(') {
-                self.s = &self.s[1..];
-                Some(SExprToken::OpenParen)
-            } else if self.s.starts_with(')') {
-                self.s = &self.s[1..];
-                Some(SExprToken::CloseParen)
-            } else if self.s.starts_with('"') {
-                self.s = &self.s[1..];
-                let mut end_idx = None;
-                for (idx, c) in self.s.char_indices() {
-                    if c == '\\' {
-                        todo!()
-                    } else if c == '"' {
-                        end_idx = Some(idx);
-                        break
-                    }
-                }
-                let end_idx = end_idx.unwrap();
-                let name = self.s[..end_idx].to_string();
-                self.s = &self.s[end_idx+1..];
-                Some(SExprToken::StrLit(name))
-            } else if self.s.starts_with('-') || self.s.chars().next().unwrap().is_digit(10) {
-                let is_neg = if self.s.starts_with('-') {
-                    self.s = &self.s[1..];
-                    true
-                } else {
-                    false
-                };
-
-                let radix = if self.s.starts_with("0x") || self.s.starts_with("0X") {
-                    self.s = &self.s[2..];
-                    16
-                } else if self.s.starts_with("0b") || self.s.starts_with("0B") {
-                    self.s = &self.s[2..];
-                    2
-                // TODO: ???
-                /*
-                } else if self.s.starts_with('0')  {
-                    todo!("octal?")
-                */
-                } else {
-                    10
-                };
-
-                let mut s = String::new();
-
-                loop {
-                    let c = self.s.chars().next().unwrap();
-                    if c.is_digit(radix) {
-                        s.push(c);
-                    } else if c == '_' {
-                        // Ignore 
-                    } else {
-                        break;
-                    }
-
-                    self.s = &self.s[1..];
-                };
-
-                let mut value = u64::from_str_radix(&s, radix).unwrap_or_else(|e| panic!("Failed to parse {} because {}", &s, e)) as i64;
-                if is_neg {
-                    value *= -1;
-                }
-
-                Some(SExprToken::IntLit(value))
-            } else {
-                let end_idx = self.s.find(|c: char| c.is_whitespace() || c == '(' || c == ')').unwrap();
-                let name = self.s[..end_idx].to_string();
-                self.s = &self.s[end_idx..];
-                Some(SExprToken::Ident(name))
-            }
-        }
-    }
-
-    struct SExprParser<'a> {
-        s: std::iter::Peekable<SExprLexer<'a>>
-    }
-
-    impl<'a> SExprParser<'a> {
-        pub fn new(s: &'a str) -> Self {
-            SExprParser { s: SExprLexer { s }.peekable() }
-        }
-
-        pub fn parse(&mut self) -> Result<SExpr, String> {
-            if self.s.peek() == Some(&SExprToken::OpenParen) {
-                let (name, params) = self.parse_parenthesized()?;
-                if name == "assert_return" {
-                    let mut params = params.into_iter();
-                    let lhs = params.next().unwrap();
-                    let rhs = params.collect();
-                    Ok(SExpr::AssertReturn(Box::new(lhs), rhs))
-                } else if name == "assert_trap" {
-                    let mut params = params.into_iter();
-                    let lhs = params.next().unwrap();
-                    let rhs = params.next().unwrap();
-                    assert!(params.next().is_none());
-                    let rhs = if let SExpr::String(s) = rhs {
-                        s
-                    } else {
-                        panic!()
-                    };
-                    Ok(SExpr::AssertTrap(Box::new(lhs), rhs))
-                } else {
-
-                    Ok(SExpr::Node { name, params })
-                }
-            } else {
-                let tok = self.s.next().unwrap();
-                match tok {
-                    SExprToken::IntLit(i) => Ok(SExpr::Int(i)),
-                    SExprToken::StrLit(s) => Ok(SExpr::String(s)),
-                    SExprToken::Ident(i) => Ok(SExpr::Ident(i)),
-                    _ => todo!("{:?}", tok)
-                }
-            }
-        }
-
-        pub fn parse_parenthesized(&mut self) -> Result<(String, Vec<SExpr>), String> {
-            if self.s.next() != Some(SExprToken::OpenParen) {
-                return Err("expected opening parenthesis".to_string())
-            }
-
-            let name = if let Some(SExprToken::Ident(i)) = self.s.next() {
-                i
-            } else {
-                return Err("expected ident".to_string())
-            };
-
-            let mut params = Vec::new();
-            while self.s.peek() != Some(&SExprToken::CloseParen) {
-                params.push(self.parse()?);
-            }
-
-            if self.s.next() != Some(SExprToken::CloseParen) {
-                return Err("expecting closing paren".to_string());
-            }
-
-            Ok((name, params))
-        }
-    }
-
-    #[derive(Debug)]
-    enum SExpr {
-        Node {
-            name: String,
-            params: Vec<SExpr>,
-        },
-        AssertReturn(Box<SExpr>, Vec<SExpr>),
-        AssertTrap(Box<SExpr>, String),
-        String(String),
-        Ident(String),
-        Int(i64),
-    }
-
-    impl std::str::FromStr for SExpr {
-        type Err = String;
-
-        fn from_str(s: &str) -> Result<Self, Self::Err> {
-            SExprParser::new(s).parse()
-        }
-    }
 
     struct TestState<'a> {
         interp: Interpreter,
@@ -5240,6 +5048,7 @@ mod test {
     }
 
     use std::convert::TryFrom;
+    use crate::sexpr::SExpr;
 
     impl TestState<'_> {
         pub fn eval_expr(&mut self, s: &SExpr) -> Vec<WasmValue> {
@@ -5281,17 +5090,17 @@ mod test {
                         match &arg[..] {
                             [WasmValue::I32(arg)] => {
                                 self.state.registers.set_i32(Register::Param(idx as u32), *arg);
-                                let holder = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
+                                let holder = ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
                                 let obj = Objective::new("reg".to_string()).unwrap();
                                 self.interp.scoreboard.set(&holder, &obj, *arg);
                             }
                             [WasmValue::I64(arg)] => {
                                 self.state.registers.set_i64(Register::Param(idx as u32), *arg);
                                 let obj = Objective::new("reg".to_string()).unwrap();
-                                let holder_lo = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
+                                let holder_lo = ScoreHolder::new(Register::Param(idx as u32).get_lo()).unwrap();
                                 let arg_lo = *arg as i32;
                                 self.interp.scoreboard.set(&holder_lo, &obj, arg_lo);
-                                let holder_hi = datapack_vm::cir::ScoreHolder::new(Register::Param(idx as u32).get_hi()).unwrap();
+                                let holder_hi = ScoreHolder::new(Register::Param(idx as u32).get_hi()).unwrap();
                                 let arg_hi = (*arg >> 32) as i32;
                                 self.interp.scoreboard.set(&holder_hi, &obj, arg_hi);
 

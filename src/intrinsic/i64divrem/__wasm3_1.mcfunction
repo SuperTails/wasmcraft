@@ -12,3 +12,4 @@ execute at @e[tag=stackptr] store result score %return%0%hi reg run data get blo
 execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~ ~
 scoreboard players remove %stackptr wasm 1
 execute at @e[tag=stackptr] store result score %return%0%lo reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
+scoreboard players set %%taken wasm 1
