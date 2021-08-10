@@ -36,13 +36,15 @@ impl Label {
 #[derive(Debug, Clone)]
 /// Every branch destination must be a new Basic Block
 pub struct BasicBlock<T> {
+    op_stack: OpStack,
     label: Label,
     instrs: Vec<T>,
 }
 
 impl<T> BasicBlock<T> {
-    fn new(func_idx: CodeFuncIdx, idx: usize) -> Self {
+    fn new(func_idx: CodeFuncIdx, idx: usize, op_stack: OpStack) -> Self {
         BasicBlock {
+            op_stack,
             label: Label { func_idx, idx },
             instrs: Vec::new()
         }
@@ -79,30 +81,14 @@ impl<T> BasicBlock<T> {
 
 impl BasicBlock<Instr> {
     fn lower(&self, globals: &GlobalList, bb_idx: usize, insert_sync: bool) -> BasicBlock<String> {
-        let mut body = Vec::new();
+        let sync_bb_idx = if insert_sync { Some(bb_idx) } else { None };
 
-        if insert_sync {
-            body.push(format!("# !INTERPRETER: SYNC {} 0", bb_idx));
-        }
-
-        for (idx, i) in self.instrs.iter().enumerate() {
-            i.lower(&mut body, &globals);
-            if insert_sync {
-                body.push(format!("# !INTERPRETER: SYNC {} {}", bb_idx, idx + 1));
-            }
-        }
-
-        if insert_sync {
-            body.pop();
-        }
-
-        if BRANCH_CONV == BranchConv::Direct {
-            body.push("scoreboard players set %%taken wasm 1".to_string());
-        }
+        let instrs = CodeEmitter::emit_all(self, globals, sync_bb_idx);
 
         BasicBlock {
+            op_stack: self.op_stack.clone(),
             label: self.label.clone(),
-            instrs: body,
+            instrs,
         }
     }
 }
@@ -115,7 +101,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Direct;
+const BRANCH_CONV: BranchConv = BranchConv::Chain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -314,7 +300,1132 @@ enum Instr {
     Unreachable,
 }
 
-#[derive(Debug)]
+struct CodeEmitter {
+    pub body: Vec<String>,
+    pub op_stack: OpStack,
+
+    sync_bb_idx: Option<usize>,
+    sync_instr_idx: usize,
+}
+
+impl CodeEmitter {
+    pub fn new(op_stack: OpStack, sync_bb_idx: Option<usize>) -> Self {
+        let mut emitter = CodeEmitter {
+            body: Vec::new(),
+            op_stack,
+            sync_bb_idx,
+            sync_instr_idx: 0,
+        };
+        
+        emitter.emit_sync();
+        
+        emitter
+    }
+
+    pub fn finalize(mut self) -> Vec<String> {
+        if self.sync_bb_idx.is_some() {
+            self.body.pop();
+        }
+
+        if BRANCH_CONV == BranchConv::Direct {
+            self.body.push("scoreboard players set %%taken wasm 1".to_string());
+        }
+
+        self.body
+    }
+
+    pub fn emit_all(basic_block: &BasicBlock<Instr>, global_list: &GlobalList, sync_bb_idx: Option<usize>) -> Vec<String> {
+        println!("\nSTARTING");
+        println!("Opcode stack: {:?}", basic_block.op_stack);
+
+        let mut emitter = Self::new(basic_block.op_stack.clone(), sync_bb_idx);
+        for i in basic_block.instrs.iter() {
+            emitter.emit(i, global_list);
+        }
+        emitter.finalize()
+    }
+
+    fn emit_sync(&mut self) {
+        if let Some(bb_idx) = self.sync_bb_idx {
+            self.body.push(format!("# !INTERPRETER: SYNC {} {}", bb_idx, self.sync_instr_idx));
+        }
+
+        self.sync_instr_idx += 1;
+    }
+
+    pub fn emit(&mut self, instr: &Instr, global_list: &GlobalList) {
+        println!("Emitting {:?}", instr);
+        
+        self.body.push(format!("# {:?}", instr));
+
+        self.emit_inner(instr, global_list);
+
+        self.emit_sync();
+    }
+
+    pub fn emit_inner(&mut self, instr: &Instr, global_list: &GlobalList) {
+        let blocks = [
+            "minecraft:air",
+            "minecraft:cobblestone",
+            "minecraft:granite",
+            "minecraft:andesite",
+            "minecraft:diorite",
+            "minecraft:lapis_block",
+            "minecraft:iron_block",
+            "minecraft:gold_block",
+            "minecraft:diamond_block",
+            "minecraft:redstone_block",
+        ];
+
+        use Instr::*;
+        match instr {
+            Comment(s) => {
+                self.body.push(format!("# {}", s));
+            }
+            Tellraw(s) => {
+                self.body.push(format!("tellraw @a {}", s));
+            }
+
+            SetConst(reg, v) => {
+                self.body.push(format!("scoreboard players set {} reg {}", reg.get(), v));
+            }
+
+            SetTurtleCoord(reg, axis) => {
+                self.body.push(format!("execute as @e[tag=turtle] store result entity @s Pos[{}] double 1 run scoreboard players get {} reg", *axis as u32, reg.get_lo()));
+            }
+            SetTurtleBlock(reg) => {
+                for (idx, block) in blocks.iter().enumerate() {
+                    self.body.push(format!("execute at @e[tag=turtle] if score {} reg matches {}..{} run setblock ~ ~ ~ {} destroy\n", reg.get_lo(), idx, idx, block));
+                }
+
+                let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), blocks.len() - 1);
+                s.push_str(r#"tellraw @a [{"text":"Attempt to set invalid block"},{"score":{"name":""#);
+                s.push_str(&reg.get_lo());
+                s.push_str(r#"","objective":"reg"}}]"#);
+                self.body.push(s);
+            }
+            TurtleGet(reg) => {
+                self.body.push(format!("scoreboard players set {} reg -1", reg.as_lo()));
+                for (i, b) in blocks.iter().enumerate() {
+                    self.body.push(format!("execute at @e[tag=turtle] if block ~ ~ ~ {} run scoreboard players set {} reg {}", b, reg.get_lo(), i));
+                }
+            }
+
+            Copy { dst, src } => {
+                if dst != src {
+                    self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, src));
+                }
+            }
+
+            SetMemPtr(reg) => {
+                self.body.push(format!("scoreboard players operation %ptr reg = {} reg", reg.get_lo()));
+                self.body.push("function intrinsic:setptr".to_string());
+            }
+            &SetGlobalPtr(global_index) => {
+                let pos = global_list.get_offset(global_index);
+                self.body.push(format!("execute as @e[tag=globalptr] run tp @s {}", pos));
+            }
+
+            &PopI32Into(reg) => {           
+                CodeEmitter::pop_i32_into(reg, &mut self.body);
+                self.op_stack.pop_i32();
+            }
+            &PopI64Into(reg) => {
+                CodeEmitter::pop_i64_into(reg, &mut self.body);
+                self.op_stack.pop_i64();
+            }
+            PopI64IntoSplit { hi, lo } => {
+                CodeEmitter::decr_stack_ptr_half(&mut self.body);
+                self.body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", hi.get_lo()));
+
+                CodeEmitter::decr_stack_ptr_half(&mut self.body);
+                self.body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", lo.get_lo()));
+
+                self.op_stack.pop_i64();
+            }
+
+            LoadLocalI64(reg) => {
+                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
+            }
+            StoreLocalI64(reg) => {
+                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
+            }
+            LoadLocalI32(reg) => {
+                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+            }
+            StoreLocalI32(reg) => {
+                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+            }
+
+
+            &SetLocalPtr(local_index) => {
+                self.body.push(format!("execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~{} 0 1", -(local_index as i32) - 1 ));
+            }
+
+            &AddI32Const(reg, value) => {
+                use std::cmp::Ordering::*;
+                match value.cmp(&0) {
+                    Greater => self.body.push(format!("scoreboard players add {} reg {}", reg, value)),
+                    Less => self.body.push(format!("scoreboard players remove {} reg {}", reg, -value)),
+                    Equal => {},
+                }
+            }
+            &I64ExtendI32S { dst, src } => {
+                if dst != src {
+                    self.body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), src.get_lo()));
+                }
+                self.body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg -1", src.get_lo(), dst.get_hi()));
+                self.body.push(format!("execute if score {} reg matches 0.. run scoreboard players set {} reg 0", src.get_lo(), dst.get_hi()));
+            }
+            I64ExtendI32U(reg) => {
+                self.body.push(format!("scoreboard players set {} reg 0", reg.get_hi()));
+            }
+
+            I32MulTo64 { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("function intrinsic:mul_32_to_64".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %return%1 reg", dst.as_hi()));
+            }
+
+            I64Rotl { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                self.body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
+
+                self.body.push("function intrinsic:rotl_64".to_string());
+
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            I64Rotr { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                self.body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
+
+                self.body.push("function intrinsic:rotr_64".to_string());
+
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+
+            I64Shl { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                self.body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
+
+                self.body.push("function intrinsic:shl_64".to_string());
+
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            I64ShrU { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                self.body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
+
+                self.body.push("function intrinsic:lshr_i64".to_string());
+
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            I64ShrS { dst, lhs, rhs } => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
+                self.body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
+
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
+
+                self.body.push("function intrinsic:ashr_i64".to_string());
+
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
+            }
+            &I64DivS { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                self.body.push("function intrinsic:i64_sdiv".to_string());
+            }
+            &I64DivU { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                self.body.push("function intrinsic:i64_udiv".to_string());
+            }
+            &I64RemS { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                self.body.push("function intrinsic:i64_srem".to_string());
+            }
+            &I64RemU { dst, lhs, rhs } => {
+                assert_eq!(dst, Register::Return(0));
+                assert_eq!(lhs, Register::Param(0));
+                assert_eq!(rhs, Register::Param(1));
+
+                self.body.push("function intrinsic:i64_urem".to_string());
+            }
+
+            I64Add { dst, lhs, rhs } => {
+                let carry = Register::Work(10).as_lo();
+
+                assert_ne!(*dst, carry.0);
+                assert_ne!(*lhs, carry.0);
+                assert_ne!(*rhs, carry.0);
+                assert_ne!(dst, lhs);
+                assert_ne!(dst, rhs);
+                assert_ne!(lhs, rhs);
+
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), lhs.get_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_hi(), lhs.get_hi()));
+
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_lo(), rhs.get_lo()));
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), rhs.get_hi()));
+
+                /*
+                    Carrying:
+
+                    if lhs < 0 && rhs < 0 {
+                        true
+                    } else if lhs < 0 && rhs >= 0 {
+                        lhs + rhs >= 0
+                    } else if lhs >= 0 && rhs < 0 {
+                        lhs + rhs >= 0
+                    } else {
+                        false
+                    }
+                
+                */
+
+                self.body.push(format!("scoreboard players set {} reg 0", carry));
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), carry));
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
+                self.body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
+
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), carry));
+            }
+
+            &I64Eq { dst, lhs, invert, rhs } => {
+                self.body.push(format!("execute store success score {} reg if score {} reg = {} reg if score {} reg = {} reg", dst.as_lo(), lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi()));
+
+                if invert {
+                    self.body.push(format!("execute store success score {} reg if score {} reg matches 0..0", dst.as_lo(), dst.as_lo()));
+                }
+            }
+            &I64UComp { dst, mut lhs, mut op, mut rhs } => {
+                /*
+                    if lhs_hi ltu rhs_hi:
+                        return true
+                    if lhs_hi gtu rhs_hi:
+                        return false
+                    if lhs_hi == rhs_hi:
+                        return x_lo ltu y_lo
+                */
+
+                if op == Relation::GreaterThan {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::LessThan;
+                } else if op == Relation::GreaterThanEq {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::LessThanEq;
+                }
+
+                assert!(!matches!(lhs, Register::Work(3 | 4 | 5 | 6)));
+                assert!(!matches!(rhs, Register::Work(3 | 4 | 5 | 6)));
+                assert!(!matches!(dst, Register::Work(3 | 4 | 5 | 6)));
+
+                assert_ne!(dst, lhs);
+                assert_ne!(dst, rhs);
+
+                let hi_is_lesser = Register::Work(3).as_lo();
+                let hi_is_greater = Register::Work(4).as_lo();
+                let hi_is_equal = Register::Work(5).as_lo();
+
+                let lo_is_lesser = Register::Work(6).as_lo();
+
+                self.make_i32_op(lhs.as_hi(), "ltu", rhs.as_hi(), hi_is_lesser);
+                self.make_i32_op(lhs.as_hi(), "gtu", rhs.as_hi(), hi_is_greater);
+                self.make_i32_op(lhs.as_hi(), "==", rhs.as_hi(), hi_is_equal);
+                self.make_i32_op(lhs.as_lo(), "ltu", rhs.as_lo(), lo_is_lesser);
+
+                self.body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 1", hi_is_lesser, dst.as_lo()));
+                self.body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 0", hi_is_greater, dst.as_lo()));
+                self.body.push(format!("execute if score {} reg matches 1.. run scoreboard players operation {} reg = {} reg", hi_is_equal, dst.as_lo(), lo_is_lesser));
+
+                if op == Relation::LessThanEq {
+                    self.body.push(format!("execute if score {} reg = {} reg if score {} reg = {} reg run scoreboard players set {} reg 1", lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
+                } else {
+                    assert_eq!(op, Relation::LessThan);
+                }
+
+            }
+            &I64SComp { dst, mut lhs, mut op, mut rhs } => {
+                /*
+                    if lhs_hi ltu rhs_hi:
+                        return true
+                    if lhs_hi gtu rhs_hi:
+                        return false
+                    if lhs_hi == rhs_hi:
+                        return x_lo ltu y_lo
+                */
+
+                if op == Relation::GreaterThan {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::LessThan;
+                } else if op == Relation::GreaterThanEq {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                    op = Relation::GreaterThan;
+                }
+
+                /*
+                    As written out normally:
+
+                    if lhs_hi < rhs_hi {
+                        true
+                    } else if lhs_hi > rhs_hi {
+                        false
+                    } else {
+                        (lhs_lo as u32) < (rhs_lo as u32)
+                    }
+                */
+
+
+                assert_ne!(dst, lhs);
+                assert_ne!(dst, rhs);
+
+                let op = if op == Relation::LessThan {
+                    "ltu"
+                } else {
+                    "leu"
+                };
+
+                // dst = (lhs_lo as u32) < (rhs_lo as u32);
+                self.make_i32_op(lhs.as_lo(), op, rhs.as_lo(), dst.as_lo());
+                // if lhs_hi < rhs_hi { dst = true }
+                self.body.push(format!("execute if score {} reg < {} reg run scoreboard players set {} reg 1", lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
+                // if lhs_hi > rhs_hi { dst = false }
+                self.body.push(format!("execute if score {} reg > {} reg run scoreboard players set {} reg 0", lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
+            }
+
+            I32Eqz { val, cond } => {
+                self.body.push(format!("scoreboard players set {} reg 0", cond.get_lo()));
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players set {} reg 1", val.get_lo(), cond.get_lo()));
+            }
+            I64Eqz { val, cond } => {
+                self.body.push(format!("scoreboard players set {} reg 1", cond.get_lo()));
+                self.body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_lo(), cond.get_lo()));
+                self.body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_hi(), cond.get_lo()));
+            }
+            &I32Op { dst, lhs, op, rhs } => {
+                self.make_i32_op(lhs, op, rhs, dst);
+            }
+            I32Extend8S(reg) => {
+                self.body.push(format!("scoreboard players operation {} reg %= %%256 reg", reg.as_lo()));
+                self.body.push(format!("execute if score {} reg matches 128..255 run scoreboard players remove {} reg 256", reg.as_lo(), reg.as_lo()))
+            }
+            I32Extend16S(reg) => {
+                self.body.push(format!("scoreboard players operation {} reg %= %%65536 reg", reg.as_lo()));
+                self.body.push(format!("execute if score {} reg matches 32768..65535 run scoreboard players remove {} reg 65536", reg.as_lo(), reg.as_lo()))
+            }
+            I32Popcnt(reg) => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg));
+                self.body.push("function intrinsic:popcnt".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg));
+            }
+            I32Ctz(reg) => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
+                self.body.push("function intrinsic:ctz".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
+            }
+            I32Clz(reg) => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
+                self.body.push("function intrinsic:clz".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
+            }
+            I64Clz { src, dst } => {
+                assert_ne!(src, dst);
+
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_hi(), src.get_lo()));
+                self.body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_hi(), src.get_hi()));
+                self.body.push("function intrinsic:clz".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players add {} reg 32", src.get_hi(), dst.get_lo()));
+                self.body.push(format!("scoreboard players set {} reg 0", dst.get_hi()));
+            }
+            I64Ctz { src, dst } => {
+                assert_ne!(src, dst);
+
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_hi()));
+                self.body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_lo()));
+                self.body.push("function intrinsic:ctz".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players add {} reg 32", src.get_lo(), dst.get_lo()));
+                self.body.push(format!("scoreboard players set {} reg 0", dst.get_hi()));
+            }
+
+            &PushI32From(reg) => {
+                Self::push_i32_from(reg, &mut self.body);
+                self.op_stack.push_i32();
+            }
+            &PushI64From(reg) => {
+                Self::push_i64_from(reg, &mut self.body);
+                self.op_stack.push_i64();
+            }
+            PushI64FromSplit { lo, hi } => {
+                self.body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", lo.get_lo()));
+                Self::incr_stack_ptr_half(&mut self.body);
+
+                self.body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", hi.get_lo()));
+                Self::incr_stack_ptr_half(&mut self.body);
+
+                self.op_stack.push_i64();
+            }
+            PushI32Const(value) => {
+                self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
+                Self::incr_stack_ptr(&mut self.body);
+
+                self.op_stack.push_i32();
+            }
+            &PushI64Const(value) => {
+                Self::push_i64_const(value, &mut self.body);
+
+                self.op_stack.push_i64();
+            }
+            PushReturnAddress(label) => {
+                let return_name = get_block(&label);
+
+                self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value !BLOCKIDX!{}!", return_name));
+                Self::incr_stack_ptr(&mut self.body);
+
+                // TODO: ????
+                self.op_stack.push_i32();
+            }
+
+            Branch(target) => {
+                self.body.extend(Self::jump_begin());
+                self.body.extend(Self::branch(target));
+                self.body.extend(Self::jump_end());
+
+                for ty in target.ty.iter().rev() {
+                    self.op_stack.pop_ty(*ty);
+                }
+
+                for _ in 0..target.to_pop {
+                    self.op_stack.pop_value();
+                }
+            }
+            &DynBranch(reg, table_idx) => {
+                assert_eq!(reg, Register::Work(0));
+
+                if let Some(i) = table_idx {
+                    self.body.push(format!("function wasm:dyn_branch{}", i));
+                } else {
+                    self.body.push("function wasm:dyn_branch".to_string());
+                }
+            }
+            BranchIf { t_name, f_name, cond } => {
+                self.body.push(format!("#   {:?}", instr));
+
+                Self::branch_begin(cond.as_lo(), &mut self.body);
+                Self::branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name), &mut self.body);
+                Self::branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name), &mut self.body);
+                Self::branch_end(&mut self.body);
+            }
+            BranchTable { reg, targets, default } => {
+                let targets = targets.iter().map(Some);
+
+                Self::lower_branch_table(*reg, targets, default.as_ref(), &mut self.body);
+            }
+
+            LoadGlobalI64(reg) => {
+                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
+            }
+            LoadGlobalI32(reg) => {
+                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+            }
+            StoreGlobalI64(reg) => {
+                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
+            }
+            StoreGlobalI32(reg) => {
+                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+            }
+
+            &LoadI32(dst, _align) => {
+                self.body.push("function intrinsic:load_word".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+            }
+            LoadI32_8U(dst, _align) => {
+                self.body.push("function intrinsic:load_byte".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+                // TODO: Determine if load_byte actually returns a byte
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+            }
+            LoadI32_8S(dst, _align) => {
+                self.body.push("function intrinsic:load_byte".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
+                // TODO: Determine if load_byte actually returns a byte
+                self.body.push(format!("execute if score {} reg matches 128..255 run scoreboard players add {} reg -256", dst.get_lo(), dst.get_lo()));
+            }
+            LoadI32_16U(dst, _align) => {
+                // TODO:
+                self.body.push("function intrinsic:load_halfword_unaligned".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                // TODO: Determine if load_halfword actually returns a halfword
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+            }
+            LoadI32_16S(dst, _align) => {
+                // TODO:
+                self.body.push("function intrinsic:load_halfword_unaligned".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
+                // TODO: Determine if load_halfword actually returns a halfword
+                self.body.push(format!("execute if score {} reg matches 32768..65535 run scoreboard players add {} reg -65536", dst.get_lo(), dst.get_lo()));
+            }
+            &StoreI32(src, _align) => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
+                self.body.push("function intrinsic:store_word".to_string());
+            }
+            &StoreI32_8(src, _align) => {
+                self.body.push(format!("scoreboard players operation %param2%0 reg = {} reg", src.get_lo()));
+                self.body.push("function intrinsic:store_byte".to_string());
+            }
+            &StoreI32_16(src, _align) => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
+                // TODO:
+                self.body.push("function intrinsic:store_halfword_unaligned".to_string());
+            }
+
+            StoreRow(src) => {
+                for i in 0..8 {
+                    self.body.push(format!("execute at @e[tag=memoryptr] store result block ~ ~ ~{} RecordItem.tag.Memory int 1 run scoreboard players get {} reg", i, src.get_lo()))
+                }
+            }
+
+            ResetFrames => {
+                self.body.push("execute as @e[tag=frameptr] run tp @s 0 0 1".to_string());
+                self.body.push("scoreboard players set %frameptr wasm 0".to_string());
+            }
+            &PushFrame(local_count) => {
+                if local_count != 0 {
+                    self.body.push(format!("# Push frame with {} locals", local_count));
+                    self.body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}}", local_count - 1));
+                    self.body.push(format!("execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~{} ~ ~", local_count));
+                }
+            }
+            &PopFrame(local_count) => {
+                if local_count != 0 {
+                    self.body.push(format!("execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~-{} ~ ~", local_count));
+                    self.body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:air", local_count - 1));
+                }
+            }
+
+            Drop => {
+                Self::decr_stack_ptr(&mut self.body);
+                self.op_stack.pop_value();
+            }
+            SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
+                assert_ne!(dst_reg, false_reg);
+                assert_ne!(dst_reg, cond_reg);
+
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
+                //self.body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
+
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_lo(), false_reg.get_lo()));
+                //self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
+            }
+            SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
+                assert_ne!(dst_reg, false_reg);
+                assert_ne!(dst_reg, cond_reg);
+
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
+
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_lo(), false_reg.as_lo()));
+                self.body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_hi(), false_reg.as_hi()));
+            }
+
+            Unreachable => {
+                self.body.push("tellraw @a \"ENTERED UNREACHABLE CODE\"".to_string());
+            }
+        }
+    }
+
+    pub fn push_i32_from(reg: Register, body: &mut Vec<String>) {
+        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+        Self::incr_stack_ptr(body);
+    }
+
+    pub fn push_i64_from(reg: Register, body: &mut Vec<String>) {
+        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+        Self::incr_stack_ptr_half(body);
+
+        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
+        Self::incr_stack_ptr_half(body);
+    }
+
+    pub fn pop_i32_into(reg: Register, body: &mut Vec<String>) {
+        Self::decr_stack_ptr(body);
+        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+    }
+
+    pub fn pop_i64_into(reg: Register, body: &mut Vec<String>) {
+        Self::decr_stack_ptr_half(body);
+        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_hi()));
+
+        Self::decr_stack_ptr_half(body);
+        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+    }
+
+    pub fn incr_stack_ptr_half(body: &mut Vec<String>) {
+        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~ ~".to_string());
+        body.push("scoreboard players add %stackptr wasm 1".to_string());
+    }
+
+    pub fn incr_stack_ptr(body: &mut Vec<String>) {
+        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~ ~".to_string());
+        body.push("scoreboard players add %stackptr wasm 2".to_string());
+    }
+
+    pub fn decr_stack_ptr_half(body: &mut Vec<String>) {
+        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~ ~".to_string());
+        body.push("scoreboard players remove %stackptr wasm 1".to_string());
+    }
+
+    pub fn decr_stack_ptr(body: &mut Vec<String>) {
+        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~ ~".to_string());
+        body.push("scoreboard players remove %stackptr wasm 2".to_string());
+    }
+
+    pub fn make_i32_op(&mut self, mut lhs: HalfRegister, mut op: &str, mut rhs: HalfRegister, dst: HalfRegister) {
+        match op {
+            "+=" | "-=" | "*=" | "%=" => {
+                self.body.push(format!("scoreboard players operation {} reg {} {} reg", lhs, op, rhs));
+                assert_eq!(lhs, dst);
+            }
+            "/=" => {
+                // Minecraft division always rounds towards negative infinity, so we need to correct for that
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
+
+                let rem = Register::Work(21).as_lo();
+
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", rem, lhs));
+                self.body.push(format!("scoreboard players operation {} reg %= {} reg ", rem, rhs));
+
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                self.body.push(format!("scoreboard players operation {} reg /= {} reg", dst, rhs));
+
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. unless score {} reg matches 0..0 run scoreboard players add {} reg 1", lhs, rhs, rem, dst));
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. unless score {} reg matches 0..0 run scoreboard players add {} reg 1", rhs, lhs, rem, dst));
+            }
+            "/=u" => {
+                let d1 = Register::Work(30).as_lo();
+                let r1 = Register::Work(31).as_lo();
+                let d2 = Register::Work(32).as_lo();
+                let r2 = Register::Work(33).as_lo();
+                let d3 = Register::Work(34).as_lo();
+                let is_gtu = Register::Work(35).as_lo();
+                let lhs_lo = Register::Work(36).as_lo();
+
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
+
+                // let mut dst = 0;
+                self.body.push(format!("scoreboard players set {} reg 0", dst));
+
+                // if lhs >= 0 && rhs >= 0 { dst = lhs / rhs }
+                self.body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players operation {} reg = {} reg", lhs, rhs, dst, lhs));
+                self.body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players operation {} reg /= {} reg", lhs, rhs, dst, rhs));
+
+                // is_gtu = (lhs as u32) >= (rhs as u32)
+                self.make_i32_op(lhs, "geu", rhs, is_gtu);
+                // if lhs < 0 && rhs < 0 && is_gtu { dst = 1 }
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 if score {} reg matches 1..1 run scoreboard players set {} reg 1", lhs, rhs, is_gtu, dst));
+
+                // lhs_lo = lhs & 0x7F
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", lhs_lo, lhs));
+                self.body.push(format!("scoreboard players operation {} reg += %%-2147483648 reg", lhs_lo));
+
+                // d1 = lhs_lo / rhs
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", d1, lhs_lo));
+                self.body.push(format!("scoreboard players operation {} reg /= {} reg", d1, rhs));
+                // r1 = lhs_lo % rhs
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", r1, lhs_lo));
+                self.body.push(format!("scoreboard players operation {} reg %= {} reg", r1, rhs));
+
+                // d2 = i32::MAX / rhs
+                self.body.push(format!("scoreboard players set {} reg {}", d2, i32::MAX));
+                self.body.push(format!("scoreboard players operation {} reg /= {} reg", d2, rhs));
+                // r2 = i32::MAX % rhs
+                self.body.push(format!("scoreboard players set {} reg {}", r2, i32::MAX));
+                self.body.push(format!("scoreboard players operation {} reg %= {} reg", r2, rhs));
+
+                // r1 += r2
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", r1, r2));
+                // r1 += 1
+                self.body.push(format!("scoreboard players add {} reg 1", r1));
+
+                // d3 = r1 / rhs
+                self.body.push(format!("scoreboard players operation {} reg = {} reg", d3, r1));
+                self.body.push(format!("scoreboard players operation {} reg /= {} reg", d3, rhs));
+
+                // d1 += d2
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", d1, d2));
+                // d1 += d3
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", d1, d3));
+
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players operation {} reg = {} reg", lhs, rhs, dst, d1));
+            }
+            "remu" => {
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
+
+                self.make_i32_op(lhs, "/=u", rhs, dst);
+
+                // lhs - dst * rhs
+
+                self.body.push(format!("scoreboard players operation {} reg *= {} reg", dst, rhs));
+                self.body.push(format!("scoreboard players operation {} reg *= %%-1 reg", dst));
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", dst, lhs));
+            }
+            "rems" => {
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
+
+                self.make_i32_op(lhs, "/=", rhs, dst);
+
+                // lhs - dst * rhs
+
+                self.body.push(format!("scoreboard players operation {} reg *= {} reg", dst, rhs));
+                self.body.push(format!("scoreboard players operation {} reg *= %%-1 reg", dst));
+                self.body.push(format!("scoreboard players operation {} reg += {} reg", dst, lhs));
+            }
+
+            "&=" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("function intrinsic:and".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
+            }
+            "|=" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("function intrinsic:or".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
+            }
+            "^=" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("function intrinsic:xor".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
+            }
+            "shl" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
+                self.body.push("function intrinsic:shl".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+            }
+            "shru" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
+                self.body.push("function intrinsic:lshr".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+            }
+            "shrs" => {
+                assert_ne!(dst, rhs);
+
+                self.body.push(format!("scoreboard players operation {} reg %= %%32 reg", rhs));
+
+                if dst != lhs {
+                    self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                }
+
+                for i in 1..31 {
+                    self.body.push(format!("execute if score {} reg matches {}..{} run scoreboard players operation {} reg /= %%{} reg", rhs, i, i, dst, 1 << i))
+                }
+                self.body.push(format!("execute if score {} reg matches 31..31 run execute store success score {} reg if score {} reg matches ..-1", rhs, dst, dst));
+                self.body.push(format!("execute if score {} reg matches 31..31 run scoreboard players operation {} reg *= %%-1 reg", rhs, dst));
+            }
+            "rotl" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
+                self.body.push("function intrinsic:rotl".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+            }
+            "rotr" => {
+                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
+                self.body.push("function intrinsic:rotr".to_string());
+                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+            }
+
+            "gts" | "ges" | "les" | "lts" | "==" => {
+                let score_op = match op {
+                    "gts" => ">",
+                    "ges" => ">=",
+                    "les" => "<=",
+                    "lts" => "<",
+                    "==" => "=",
+                    "!=" => "<>",
+                    _ => unreachable!(),
+                };
+
+                self.body.push(format!("execute store success score {} reg if score {} reg {} {} reg", dst, lhs, score_op, rhs));
+            }
+            "!=" => {
+                self.body.push(format!("execute store success score {} reg unless score {} reg = {} reg", dst, lhs, rhs));
+            }
+            "geu" | "gtu" | "leu" | "ltu" => {
+                if op == "geu" {
+                    op = "leu";
+                    std::mem::swap(&mut lhs, &mut rhs);
+                } else if op == "gtu" {
+                    op = "ltu";
+                    std::mem::swap(&mut lhs, &mut rhs);
+                }
+
+                let score_op = match op {
+                    "ltu" => "<",
+                    "leu" => "<=",
+                    _ => unreachable!(),
+                };
+
+                /*
+                    dst = false
+                    if lhs < 0 && rhs >= 0 { reg = false }
+                    if lhs >= 0 && rhs < 0 { reg = true }
+                    if lhs < 0 && rhs < 0 && lhs < rhs { reg = true }
+                    if lhs >= 0 && rhs >= 0 && lhs < rhs { reg = true }
+                */
+
+                assert_ne!(lhs, dst);
+                assert_ne!(rhs, dst);
+
+                self.body.push(format!("scoreboard players set {} reg 0", dst));
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 0", lhs, rhs, dst));
+                self.body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs, rhs, dst));
+                self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
+                self.body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
+            }
+            _ => {
+                todo!("TODO: make_i32_op {}", op);
+            }
+        }
+    }
+
+    pub fn pop_half_into(reg: Register, body: &mut Vec<String>) {
+        Self::decr_stack_ptr_half(body);
+        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+    }
+
+    pub fn push_i64_const(value: i64, body: &mut Vec<String>) {
+        body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value as i32));
+        Self::incr_stack_ptr_half(body);
+       
+        body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", (value >> 32) as i32));
+        Self::incr_stack_ptr_half(body);
+    }
+
+    pub fn push_half_from(reg: Register, body: &mut Vec<String>) {
+        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
+        Self::incr_stack_ptr_half(body);
+    }
+
+    fn add_condition(code: &mut Vec<String>, cond: &str)  {
+        for c in code.iter_mut() {
+            if !c.starts_with('#') {
+                *c = format!("{}{}", cond, *c);
+            }
+        }
+    }
+
+    fn branch_begin(cond: HalfRegister, body: &mut Vec<String>) {
+        // TODO: This is only necessary for the direct convention
+        //if BRANCH_CONV == BranchConv::Direct {
+        body.push("scoreboard players set %%taken wasm 0".to_string());
+        //}
+
+        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
+
+        body.extend(Self::jump_begin());
+    }
+
+    fn branch_arm(cond: &str, target: Option<&BranchTarget>, body: &mut Vec<String>) {
+        let mut true_code = if let Some(target) = target {
+            Self::branch(target)
+        } else {
+            Self::halt()
+        };
+
+        Self::add_condition(&mut true_code, cond);
+        body.extend(true_code);
+    }
+
+    fn branch_end(body: &mut Vec<String>) {
+        body.extend(Self::jump_end());
+    }
+
+    fn jump_begin() -> Vec<String> {
+        match BRANCH_CONV {
+            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => vec![],
+            BranchConv::Chain => {
+                vec![
+                    // Update command count
+                    "scoreboard players add %cmdcount wasm !COMMANDCOUNT!!".to_string(),
+
+                    // Reset next command to break the chain
+                    //"execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
+                    "execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string(),
+                    // Set nextchain to the temporary chain block
+                    "execute if score %cmdcount wasm >= %maxcmdcount wasm as @e[tag=nextchain] run tp @s 1 1 -1".to_string(),
+                ]
+            }
+        }
+    }
+
+    fn jump_end() -> Vec<String> {
+        match BRANCH_CONV {
+            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => { vec![] }
+            BranchConv::Chain => {
+                vec![
+                    // Activate start block
+                    "execute if score %cmdcount wasm >= %maxcmdcount wasm run setblock 0 1 -1 minecraft:redstone_block replace".to_string(),
+
+                    // Set nextchain to this block
+                    "execute if score %cmdcount wasm < %maxcmdcount wasm as @e[tag=nextchain] run tp @s ~ ~ ~".to_string(),
+                ]
+            }
+        }
+    }
+
+    fn halt() -> Vec<String> {
+        match BRANCH_CONV {
+            BranchConv::Grid | BranchConv::Loop | BranchConv::Direct => { Vec::new() }
+            BranchConv::Chain => {
+                vec![
+                    //"execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()
+                    "execute at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string()
+                ]
+            }
+        }
+    }
+
+    fn jump(entry: &Label) -> Vec<String> {
+        let entry = get_block(entry);
+
+        let mut body = Vec::new();
+
+        body.push(format!("#   Jump to {}", entry));
+        match BRANCH_CONV {
+            BranchConv::Grid => {
+                body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
+            }
+            BranchConv::Chain => {
+                body.push(format!("execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"function wasm:{}\"", entry));
+            }
+            BranchConv::Direct => {
+                body.push(format!("function wasm:{}", entry));
+            }
+            c => todo!("{:?}", c)
+        }
+
+        body
+    }
+
+    fn lower_drop(body: &mut Vec<String>) {
+        Self::decr_stack_ptr(body)
+    }
+
+    fn branch(target: &BranchTarget) -> Vec<String> {
+        let mut body = Vec::new();
+
+        let entry = get_block(&target.label);
+
+        body.push(format!("#   Branch to {}", entry));
+        for (idx, ty) in target.ty.iter().enumerate().rev() {
+            // TODO: Should I use the return register?
+            Self::lower_pop_into(Register::Return(idx as u32), *ty, &mut body);
+        }
+
+        // TODO: Optimize
+        for _ in 0..target.to_pop {
+            Self::lower_drop(&mut body);
+        }
+
+        for (idx, ty) in target.ty.iter().enumerate() {
+            Self::lower_push_from(Register::Return(idx as u32), *ty, &mut body);
+        }
+
+        body.extend(Self::jump(&target.label));
+
+        body
+    }
+
+
+    pub fn lower_branch_table<'a, I>(reg: Register, targets: I, default: Option<&BranchTarget>, body: &mut Vec<String>)
+        where I: ExactSizeIterator<Item=Option<&'a BranchTarget>>,
+    {
+        let num_targets = targets.len();
+
+        if num_targets == 0 {
+            body.extend(Self::jump_begin());
+            body.extend(Self::branch(default.as_ref().unwrap()));
+            body.extend(Self::jump_end());
+        } else {
+            Self::branch_begin(reg.as_lo(), body);
+
+            for (idx, target) in targets.enumerate() {
+                let cond = format!("execute if score %%taken wasm matches 0 if score %%tempcond reg matches {}..{} run ", idx, idx);
+
+                Self::branch_arm(&cond, target, body);
+            }
+
+            let cond = format!("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..{} run ", num_targets - 1);
+            Self::branch_arm(&cond, default, body);
+
+            Self::branch_end(body);
+        }
+    }
+
+    pub fn lower_pop_into(reg: Register, ty: Type, body: &mut Vec<String>) {
+        match ty {
+            Type::I32 => Self::pop_i32_into(reg, body),
+            Type::I64 => Self::pop_i64_into(reg, body),
+            _ => todo!("{:?}", ty)
+        }
+    }
+
+    pub fn lower_push_from(reg: Register, ty: Type, body: &mut Vec<String>) {
+        match ty {
+            Type::I32 => Self::push_i32_from(reg, body),
+            Type::I64 => Self::push_i64_from(reg, body),
+            _ => todo!("{:?}", ty)
+        }
+    }
+
+}
+
+#[derive(Debug, Clone)]
 struct OpStack(Vec<Type>);
 
 impl OpStack {
@@ -349,29 +1460,14 @@ impl OpStack {
     pub fn pop_ty(&mut self, ty: Type) {
         assert_eq!(self.pop_value(), ty);
     }
+
 }
 
 impl Instr {
-    pub fn lower_pop_into(reg: Register, ty: Type, body: &mut Vec<String>) {
-        match ty {
-            Type::I32 => Self::pop_i32_into(reg, body),
-            Type::I64 => Self::pop_i64_into(reg, body),
-            _ => todo!("{:?}", ty)
-        }
-    }
-
     pub fn pop_into(reg: Register, ty: Type) -> Self {
         match ty {
             Type::I32 => Instr::PopI32Into(reg),
             Type::I64 => Instr::PopI64Into(reg),
-            _ => todo!("{:?}", ty)
-        }
-    }
-
-    pub fn lower_push_from(reg: Register, ty: Type, body: &mut Vec<String>) {
-        match ty {
-            Type::I32 => Self::push_i32_from(reg, body),
-            Type::I64 => Self::push_i64_from(reg, body),
             _ => todo!("{:?}", ty)
         }
     }
@@ -399,7 +1495,6 @@ impl Instr {
             _ => todo!("{:?}", ty)
         }
     }
-
 
     pub fn store_global(reg: Register, ty: Type) -> Self {
         match ty {
@@ -490,264 +1585,6 @@ impl Instr {
         ]
     }
 
-    pub fn incr_stack_ptr_half(body: &mut Vec<String>) {
-        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~1 ~ ~".to_string());
-        body.push("scoreboard players add %stackptr wasm 1".to_string());
-    }
-
-    pub fn incr_stack_ptr(body: &mut Vec<String>) {
-        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~2 ~ ~".to_string());
-        body.push("scoreboard players add %stackptr wasm 2".to_string());
-    }
-
-    pub fn decr_stack_ptr_half(body: &mut Vec<String>) {
-        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-1 ~ ~".to_string());
-        body.push("scoreboard players remove %stackptr wasm 1".to_string());
-    }
-
-    pub fn decr_stack_ptr(body: &mut Vec<String>) {
-        body.push("execute at @e[tag=stackptr] as @e[tag=stackptr] run tp @s ~-2 ~ ~".to_string());
-        body.push("scoreboard players remove %stackptr wasm 2".to_string());
-    }
-
-    pub fn make_i32_op(&self, mut lhs: HalfRegister, mut op: &str, mut rhs: HalfRegister, body: &mut Vec<String>, dst: HalfRegister) {
-        match op {
-            "+=" | "-=" | "*=" | "%=" => {
-                body.push(format!("scoreboard players operation {} reg {} {} reg", lhs, op, rhs));
-                assert_eq!(lhs, dst);
-            }
-            "/=" => {
-                // Minecraft division always rounds towards negative infinity, so we need to correct for that
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
-
-                let rem = Register::Work(21).as_lo();
-
-                body.push(format!("scoreboard players operation {} reg = {} reg", rem, lhs));
-                body.push(format!("scoreboard players operation {} reg %= {} reg ", rem, rhs));
-
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", dst, rhs));
-
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. unless score {} reg matches 0..0 run scoreboard players add {} reg 1", lhs, rhs, rem, dst));
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. unless score {} reg matches 0..0 run scoreboard players add {} reg 1", rhs, lhs, rem, dst));
-            }
-            "/=u" => {
-                let d1 = Register::Work(30).as_lo();
-                let r1 = Register::Work(31).as_lo();
-                let d2 = Register::Work(32).as_lo();
-                let r2 = Register::Work(33).as_lo();
-                let d3 = Register::Work(34).as_lo();
-                let is_gtu = Register::Work(35).as_lo();
-                let lhs_lo = Register::Work(36).as_lo();
-
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
-
-                // let mut dst = 0;
-                body.push(format!("scoreboard players set {} reg 0", dst));
-
-                // if lhs >= 0 && rhs >= 0 { dst = lhs / rhs }
-                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players operation {} reg = {} reg", lhs, rhs, dst, lhs));
-                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players operation {} reg /= {} reg", lhs, rhs, dst, rhs));
-
-                // is_gtu = (lhs as u32) >= (rhs as u32)
-                self.make_i32_op(lhs, "geu", rhs, body, is_gtu);
-                // if lhs < 0 && rhs < 0 && is_gtu { dst = 1 }
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 if score {} reg matches 1..1 run scoreboard players set {} reg 1", lhs, rhs, is_gtu, dst));
-
-                // lhs_lo = lhs & 0x7F
-                body.push(format!("scoreboard players operation {} reg = {} reg", lhs_lo, lhs));
-                body.push(format!("scoreboard players operation {} reg += %%-2147483648 reg", lhs_lo));
-
-                // d1 = lhs_lo / rhs
-                body.push(format!("scoreboard players operation {} reg = {} reg", d1, lhs_lo));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", d1, rhs));
-                // r1 = lhs_lo % rhs
-                body.push(format!("scoreboard players operation {} reg = {} reg", r1, lhs_lo));
-                body.push(format!("scoreboard players operation {} reg %= {} reg", r1, rhs));
-
-                // d2 = i32::MAX / rhs
-                body.push(format!("scoreboard players set {} reg {}", d2, i32::MAX));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", d2, rhs));
-                // r2 = i32::MAX % rhs
-                body.push(format!("scoreboard players set {} reg {}", r2, i32::MAX));
-                body.push(format!("scoreboard players operation {} reg %= {} reg", r2, rhs));
-
-                // r1 += r2
-                body.push(format!("scoreboard players operation {} reg += {} reg", r1, r2));
-                // r1 += 1
-                body.push(format!("scoreboard players add {} reg 1", r1));
-
-                // d3 = r1 / rhs
-                body.push(format!("scoreboard players operation {} reg = {} reg", d3, r1));
-                body.push(format!("scoreboard players operation {} reg /= {} reg", d3, rhs));
-
-                // d1 += d2
-                body.push(format!("scoreboard players operation {} reg += {} reg", d1, d2));
-                // d1 += d3
-                body.push(format!("scoreboard players operation {} reg += {} reg", d1, d3));
-
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players operation {} reg = {} reg", lhs, rhs, dst, d1));
-            }
-            "remu" => {
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
-
-                self.make_i32_op(lhs, "/=u", rhs, body, dst);
-
-                // lhs - dst * rhs
-
-                body.push(format!("scoreboard players operation {} reg *= {} reg", dst, rhs));
-                body.push(format!("scoreboard players operation {} reg *= %%-1 reg", dst));
-                body.push(format!("scoreboard players operation {} reg += {} reg", dst, lhs));
-            }
-            "rems" => {
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
-
-                self.make_i32_op(lhs, "/=", rhs, body, dst);
-
-                // lhs - dst * rhs
-
-                body.push(format!("scoreboard players operation {} reg *= {} reg", dst, rhs));
-                body.push(format!("scoreboard players operation {} reg *= %%-1 reg", dst));
-                body.push(format!("scoreboard players operation {} reg += {} reg", dst, lhs));
-            }
-
-            "&=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("function intrinsic:and".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
-            }
-            "|=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("function intrinsic:or".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
-            }
-            "^=" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("function intrinsic:xor".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
-            }
-            "shl" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
-                body.push("function intrinsic:shl".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
-            }
-            "shru" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
-                body.push("function intrinsic:lshr".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
-            }
-            "shrs" => {
-                assert_ne!(dst, rhs);
-
-                body.push(format!("scoreboard players operation {} reg %= %%32 reg", rhs));
-
-                if dst != lhs {
-                    body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
-                }
-
-                for i in 1..31 {
-                    body.push(format!("execute if score {} reg matches {}..{} run scoreboard players operation {} reg /= %%{} reg", rhs, i, i, dst, 1 << i))
-                }
-                body.push(format!("execute if score {} reg matches 31..31 run execute store success score {} reg if score {} reg matches ..-1", rhs, dst, dst));
-                body.push(format!("execute if score {} reg matches 31..31 run scoreboard players operation {} reg *= %%-1 reg", rhs, dst));
-            }
-            "rotl" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
-                body.push("function intrinsic:rotl".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
-            }
-            "rotr" => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
-                body.push("function intrinsic:rotr".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
-            }
-
-            "gts" | "ges" | "les" | "lts" | "==" => {
-                let score_op = match op {
-                    "gts" => ">",
-                    "ges" => ">=",
-                    "les" => "<=",
-                    "lts" => "<",
-                    "==" => "=",
-                    "!=" => "<>",
-                    _ => unreachable!(),
-                };
-
-                body.push(format!("execute store success score {} reg if score {} reg {} {} reg", dst, lhs, score_op, rhs));
-            }
-            "!=" => {
-                body.push(format!("execute store success score {} reg unless score {} reg = {} reg", dst, lhs, rhs));
-            }
-            "geu" | "gtu" | "leu" | "ltu" => {
-                if op == "geu" {
-                    op = "leu";
-                    std::mem::swap(&mut lhs, &mut rhs);
-                } else if op == "gtu" {
-                    op = "ltu";
-                    std::mem::swap(&mut lhs, &mut rhs);
-                }
-
-                let score_op = match op {
-                    "ltu" => "<",
-                    "leu" => "<=",
-                    _ => unreachable!(),
-                };
-
-                /*
-                    dst = false
-                    if lhs < 0 && rhs >= 0 { reg = false }
-                    if lhs >= 0 && rhs < 0 { reg = true }
-                    if lhs < 0 && rhs < 0 && lhs < rhs { reg = true }
-                    if lhs >= 0 && rhs >= 0 && lhs < rhs { reg = true }
-                */
-
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
-
-                body.push(format!("scoreboard players set {} reg 0", dst));
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 0", lhs, rhs, dst));
-                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs, rhs, dst));
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
-                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches 0.. if score {} reg {} {} reg run scoreboard players set {} reg 1", lhs, rhs, lhs, score_op, rhs, dst));
-            }
-            _ => {
-                todo!("TODO: make_i32_op {}", op);
-            }
-        }
-    }
-
-    pub fn pop_half_into(&self, reg: Register, body: &mut Vec<String>) {
-        Self::decr_stack_ptr_half(body);
-        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-    }
-
-    pub fn push_i64_const(&self, value: i64, body: &mut Vec<String>) {
-        body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value as i32));
-        Self::incr_stack_ptr_half(body);
-       
-        body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", (value >> 32) as i32));
-        Self::incr_stack_ptr_half(body);
-    }
-
-    pub fn push_half_from(&self, reg: Register, body: &mut Vec<String>) {
-        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-        Self::incr_stack_ptr_half(body);
-    }
 
     /*
     pub fn modify_stack(&self, op_stack: &mut OpStack, global_list: &GlobalList) {
@@ -803,766 +1640,7 @@ impl Instr {
     }
     */
 
-    fn add_condition(code: &mut Vec<String>, cond: &str)  {
-        for c in code.iter_mut() {
-            if !c.starts_with('#') {
-                *c = format!("{}{}", cond, *c);
-            }
-        }
-    }
 
-    fn branch_begin(cond: HalfRegister, body: &mut Vec<String>) {
-        if BRANCH_CONV == BranchConv::Direct {
-            body.push("scoreboard players set %%taken wasm 0".to_string());
-        }
-
-        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
-
-        body.extend(Instr::jump_begin());
-    }
-
-    fn branch_arm(cond: &str, target: Option<&BranchTarget>, body: &mut Vec<String>) {
-        let mut true_code = if let Some(target) = target {
-            Instr::branch(target)
-        } else {
-            Instr::halt()
-        };
-
-        Instr::add_condition(&mut true_code, cond);
-        body.extend(true_code);
-    }
-
-    fn branch_end(body: &mut Vec<String>) {
-        body.extend(Instr::jump_end());
-    }
-
-    fn jump_begin() -> Vec<String> {
-        match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => vec![],
-            BranchConv::Chain => {
-                vec![
-                    // Update command count
-                    "scoreboard players add %cmdcount wasm !COMMANDCOUNT!!".to_string(),
-
-                    // Reset next command to break the chain
-                    //"execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string(),
-                    // Set nextchain to the temporary chain block
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm as @e[tag=nextchain] run tp @s 1 1 -1".to_string(),
-                ]
-            }
-        }
-    }
-
-    fn jump_end() -> Vec<String> {
-        match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => { vec![] }
-            BranchConv::Chain => {
-                vec![
-                    // Activate start block
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm run setblock 0 1 -1 minecraft:redstone_block replace".to_string(),
-
-                    // Set nextchain to this block
-                    "execute if score %cmdcount wasm < %maxcmdcount wasm as @e[tag=nextchain] run tp @s ~ ~ ~".to_string(),
-                ]
-            }
-        }
-    }
-
-    fn halt() -> Vec<String> {
-        match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Loop | BranchConv::Direct => { Vec::new() }
-            BranchConv::Chain => {
-                vec![
-                    //"execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()
-                    "execute at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string()
-                ]
-            }
-        }
-    }
-
-    fn jump(entry: &Label) -> Vec<String> {
-        let entry = get_block(entry);
-
-        let mut body = Vec::new();
-
-        body.push(format!("#   Jump to {}", entry));
-        match BRANCH_CONV {
-            BranchConv::Grid => {
-                body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
-            }
-            BranchConv::Chain => {
-                body.push(format!("execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"function wasm:{}\"", entry));
-            }
-            BranchConv::Direct => {
-                body.push(format!("function wasm:{}", entry));
-            }
-            c => todo!("{:?}", c)
-        }
-
-        body
-    }
-
-    fn lower_drop(body: &mut Vec<String>) {
-        Instr::decr_stack_ptr(body)
-    }
-
-    fn branch(target: &BranchTarget) -> Vec<String> {
-        let mut body = Vec::new();
-
-        let entry = get_block(&target.label);
-
-        body.push(format!("#   Branch to {}", entry));
-        for (idx, ty) in target.ty.iter().enumerate().rev() {
-            // TODO: Should I use the return register?
-            Instr::lower_pop_into(Register::Return(idx as u32), *ty, &mut body);
-        }
-
-        // TODO: Optimize
-        for _ in 0..target.to_pop {
-            Instr::lower_drop(&mut body);
-        }
-
-        for (idx, ty) in target.ty.iter().enumerate() {
-            Instr::lower_push_from(Register::Return(idx as u32), *ty, &mut body);
-        }
-
-        body.extend(Instr::jump(&target.label));
-
-        body
-    }
-
-    pub fn push_i32_from(reg: Register, body: &mut Vec<String>) {
-        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-        Self::incr_stack_ptr(body);
-    }
-
-    pub fn push_i64_from(reg: Register, body: &mut Vec<String>) {
-        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-        Self::incr_stack_ptr_half(body);
-
-        body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
-        Self::incr_stack_ptr_half(body);
-    }
-
-    pub fn pop_i32_into(reg: Register, body: &mut Vec<String>) {
-        Instr::decr_stack_ptr(body);
-        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-    }
-
-    pub fn pop_i64_into(reg: Register, body: &mut Vec<String>) {
-        Instr::decr_stack_ptr_half(body);
-        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_hi()));
-
-        Instr::decr_stack_ptr_half(body);
-        body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-    }
-
-    pub fn lower_branch_table<'a, I>(reg: Register, targets: I, default: Option<&BranchTarget>, body: &mut Vec<String>)
-        where I: ExactSizeIterator<Item=Option<&'a BranchTarget>>,
-    {
-        let num_targets = targets.len();
-
-        if num_targets == 0 {
-            body.extend(Instr::jump_begin());
-            body.extend(Instr::branch(default.as_ref().unwrap()));
-            body.extend(Instr::jump_end());
-        } else {
-            Instr::branch_begin(reg.as_lo(), body);
-
-            for (idx, target) in targets.enumerate() {
-                let cond = format!("execute if score %%taken wasm matches 0 if score %%tempcond reg matches {}..{} run ", idx, idx);
-
-                Instr::branch_arm(&cond, target, body);
-            }
-
-            let cond = format!("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..{} run ", num_targets - 1);
-            Instr::branch_arm(&cond, default, body);
-
-            Instr::branch_end(body);
-        }
-    }
-
-    pub fn lower(&self, body: &mut Vec<String>, global_list: &GlobalList) {
-        body.push(format!("# {:?}", self));
-
-        let blocks = [
-            "minecraft:air",
-            "minecraft:cobblestone",
-            "minecraft:granite",
-            "minecraft:andesite",
-            "minecraft:diorite",
-            "minecraft:lapis_block",
-            "minecraft:iron_block",
-            "minecraft:gold_block",
-            "minecraft:diamond_block",
-            "minecraft:redstone_block",
-        ];
-
-        use Instr::*;
-        match self {
-            Comment(s) => {
-                body.push(format!("# {}", s));
-            }
-            Tellraw(s) => {
-                body.push(format!("tellraw @a {}", s));
-            }
-
-            SetConst(reg, v) => {
-                body.push(format!("scoreboard players set {} reg {}", reg.get(), v));
-            }
-
-            SetTurtleCoord(reg, axis) => {
-                body.push(format!("execute as @e[tag=turtle] store result entity @s Pos[{}] double 1 run scoreboard players get {} reg", *axis as u32, reg.get_lo()));
-            }
-            SetTurtleBlock(reg) => {
-                for (idx, block) in blocks.iter().enumerate() {
-                    body.push(format!("execute at @e[tag=turtle] if score {} reg matches {}..{} run setblock ~ ~ ~ {} destroy\n", reg.get_lo(), idx, idx, block));
-                }
-
-                let mut s = format!("execute unless score {} reg matches 0..{} run ", reg.get_lo(), blocks.len() - 1);
-                s.push_str(r#"tellraw @a [{"text":"Attempt to set invalid block"},{"score":{"name":""#);
-                s.push_str(&reg.get_lo());
-                s.push_str(r#"","objective":"reg"}}]"#);
-                body.push(s);
-            }
-            TurtleGet(reg) => {
-                body.push(format!("scoreboard players set {} reg -1", reg.as_lo()));
-                for (i, b) in blocks.iter().enumerate() {
-                    body.push(format!("execute at @e[tag=turtle] if block ~ ~ ~ {} run scoreboard players set {} reg {}", b, reg.get_lo(), i));
-                }
-            }
-
-            Copy { dst, src } => {
-                if dst != src {
-                    body.push(format!("scoreboard players operation {} reg = {} reg", dst, src));
-                }
-            }
-
-            SetMemPtr(reg) => {
-                body.push(format!("scoreboard players operation %ptr reg = {} reg", reg.get_lo()));
-                body.push("function intrinsic:setptr".to_string());
-            }
-            &SetGlobalPtr(global_index) => {
-                let pos = global_list.get_offset(global_index);
-                body.push(format!("execute as @e[tag=globalptr] run tp @s {}", pos));
-            }
-
-            &PopI32Into(reg) => {           
-                Instr::pop_i32_into(reg, body);
-            }
-            &PopI64Into(reg) => {
-                Instr::pop_i64_into(reg, body);
-            }
-            PopI64IntoSplit { hi, lo } => {
-                Instr::decr_stack_ptr_half(body);
-                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", hi.get_lo()));
-
-                Instr::decr_stack_ptr_half(body);
-                body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", lo.get_lo()));
-            }
-
-            LoadLocalI64(reg) => {
-                body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-                body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
-            }
-            StoreLocalI64(reg) => {
-                body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-                body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
-            }
-            LoadLocalI32(reg) => {
-                body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-            }
-            StoreLocalI32(reg) => {
-                body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-            }
-
-
-            &SetLocalPtr(local_index) => {
-                body.push(format!("execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~{} 0 1", -(local_index as i32) - 1 ));
-            }
-
-            &AddI32Const(reg, value) => {
-                use std::cmp::Ordering::*;
-                match value.cmp(&0) {
-                    Greater => body.push(format!("scoreboard players add {} reg {}", reg, value)),
-                    Less => body.push(format!("scoreboard players remove {} reg {}", reg, -value)),
-                    Equal => {},
-                }
-            }
-            &I64ExtendI32S { dst, src } => {
-                if dst != src {
-                    body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), src.get_lo()));
-                }
-                body.push(format!("execute if score {} reg matches ..-1 run scoreboard players set {} reg -1", src.get_lo(), dst.get_hi()));
-                body.push(format!("execute if score {} reg matches 0.. run scoreboard players set {} reg 0", src.get_lo(), dst.get_hi()));
-            }
-            I64ExtendI32U(reg) => {
-                body.push(format!("scoreboard players set {} reg 0", reg.get_hi()));
-            }
-
-            I32MulTo64 { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                body.push("function intrinsic:mul_32_to_64".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %return%1 reg", dst.as_hi()));
-            }
-
-            I64Rotl { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
-                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
-
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
-                body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
-
-                body.push("function intrinsic:rotl_64".to_string());
-
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
-            }
-            I64Rotr { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
-                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
-
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
-                body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
-
-                body.push("function intrinsic:rotr_64".to_string());
-
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
-            }
-
-            I64Shl { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
-                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
-
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
-                body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
-
-                body.push("function intrinsic:shl_64".to_string());
-
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
-            }
-            I64ShrU { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
-                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
-
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
-                body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
-
-                body.push("function intrinsic:lshr_i64".to_string());
-
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
-            }
-            I64ShrS { dst, lhs, rhs } => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs.as_lo()));
-                body.push(format!("scoreboard players operation %param0%1 reg = {} reg", lhs.as_hi()));
-
-                body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs.as_lo()));
-                body.push("scoreboard players operation %param1%0 reg %= %%64 reg".to_string());
-
-                body.push("function intrinsic:ashr_i64".to_string());
-
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.as_lo()));
-                body.push(format!("scoreboard players operation {} reg = %param0%1 reg", dst.as_hi()));
-            }
-            &I64DivS { dst, lhs, rhs } => {
-                assert_eq!(dst, Register::Return(0));
-                assert_eq!(lhs, Register::Param(0));
-                assert_eq!(rhs, Register::Param(1));
-
-                body.push("function intrinsic:i64_sdiv".to_string());
-            }
-            &I64DivU { dst, lhs, rhs } => {
-                assert_eq!(dst, Register::Return(0));
-                assert_eq!(lhs, Register::Param(0));
-                assert_eq!(rhs, Register::Param(1));
-
-                body.push("function intrinsic:i64_udiv".to_string());
-            }
-            &I64RemS { dst, lhs, rhs } => {
-                assert_eq!(dst, Register::Return(0));
-                assert_eq!(lhs, Register::Param(0));
-                assert_eq!(rhs, Register::Param(1));
-
-                body.push("function intrinsic:i64_srem".to_string());
-            }
-            &I64RemU { dst, lhs, rhs } => {
-                assert_eq!(dst, Register::Return(0));
-                assert_eq!(lhs, Register::Param(0));
-                assert_eq!(rhs, Register::Param(1));
-
-                body.push("function intrinsic:i64_urem".to_string());
-            }
-
-            I64Add { dst, lhs, rhs } => {
-                let carry = Register::Work(10).as_lo();
-
-                assert_ne!(*dst, carry.0);
-                assert_ne!(*lhs, carry.0);
-                assert_ne!(*rhs, carry.0);
-                assert_ne!(dst, lhs);
-                assert_ne!(dst, rhs);
-                assert_ne!(lhs, rhs);
-
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_lo(), lhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst.get_hi(), lhs.get_hi()));
-
-                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_lo(), rhs.get_lo()));
-                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), rhs.get_hi()));
-
-                /*
-                    Carrying:
-
-                    if lhs < 0 && rhs < 0 {
-                        true
-                    } else if lhs < 0 && rhs >= 0 {
-                        lhs + rhs >= 0
-                    } else if lhs >= 0 && rhs < 0 {
-                        lhs + rhs >= 0
-                    } else {
-                        false
-                    }
-                
-                */
-
-                body.push(format!("scoreboard players set {} reg 0", carry));
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches ..-1 run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), carry));
-                body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
-                body.push(format!("execute if score {} reg matches 0.. if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 1", lhs.get_lo(), rhs.get_lo(), dst.get_lo(), carry));
-
-                body.push(format!("scoreboard players operation {} reg += {} reg", dst.get_hi(), carry));
-            }
-
-            &I64Eq { dst, lhs, invert, rhs } => {
-                body.push(format!("execute store success score {} reg if score {} reg = {} reg if score {} reg = {} reg", dst.as_lo(), lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi()));
-
-                if invert {
-                    body.push(format!("execute store success score {} reg if score {} reg matches 0..0", dst.as_lo(), dst.as_lo()));
-                }
-            }
-            &I64UComp { dst, mut lhs, mut op, mut rhs } => {
-                /*
-                    if lhs_hi ltu rhs_hi:
-                        return true
-                    if lhs_hi gtu rhs_hi:
-                        return false
-                    if lhs_hi == rhs_hi:
-                        return x_lo ltu y_lo
-                */
-
-                if op == Relation::GreaterThan {
-                    std::mem::swap(&mut lhs, &mut rhs);
-                    op = Relation::LessThan;
-                } else if op == Relation::GreaterThanEq {
-                    std::mem::swap(&mut lhs, &mut rhs);
-                    op = Relation::LessThanEq;
-                }
-
-                assert!(!matches!(lhs, Register::Work(3 | 4 | 5 | 6)));
-                assert!(!matches!(rhs, Register::Work(3 | 4 | 5 | 6)));
-                assert!(!matches!(dst, Register::Work(3 | 4 | 5 | 6)));
-
-                assert_ne!(dst, lhs);
-                assert_ne!(dst, rhs);
-
-                let hi_is_lesser = Register::Work(3).as_lo();
-                let hi_is_greater = Register::Work(4).as_lo();
-                let hi_is_equal = Register::Work(5).as_lo();
-
-                let lo_is_lesser = Register::Work(6).as_lo();
-
-                Instr::I32Op { dst: hi_is_lesser, lhs: lhs.as_hi(), op: "ltu", rhs: rhs.as_hi() }.lower(body, global_list);
-                Instr::I32Op { dst: hi_is_greater, lhs: lhs.as_hi(), op: "gtu", rhs: rhs.as_hi() }.lower(body, global_list);
-                Instr::I32Op { dst: hi_is_equal, lhs: lhs.as_hi(), op: "==", rhs: rhs.as_hi() }.lower(body, global_list);
-                Instr::I32Op { dst: lo_is_lesser, lhs: lhs.as_lo(), op: "ltu", rhs: rhs.as_lo() }.lower(body, global_list);
-
-                body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 1", hi_is_lesser, dst.as_lo()));
-                body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 0", hi_is_greater, dst.as_lo()));
-                body.push(format!("execute if score {} reg matches 1.. run scoreboard players operation {} reg = {} reg", hi_is_equal, dst.as_lo(), lo_is_lesser));
-
-                if op == Relation::LessThanEq {
-                    body.push(format!("execute if score {} reg = {} reg if score {} reg = {} reg run scoreboard players set {} reg 1", lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
-                } else {
-                    assert_eq!(op, Relation::LessThan);
-                }
-
-            }
-            &I64SComp { dst, mut lhs, mut op, mut rhs } => {
-                /*
-                    if lhs_hi ltu rhs_hi:
-                        return true
-                    if lhs_hi gtu rhs_hi:
-                        return false
-                    if lhs_hi == rhs_hi:
-                        return x_lo ltu y_lo
-                */
-
-                if op == Relation::GreaterThan {
-                    std::mem::swap(&mut lhs, &mut rhs);
-                    op = Relation::LessThan;
-                } else if op == Relation::GreaterThanEq {
-                    std::mem::swap(&mut lhs, &mut rhs);
-                    op = Relation::GreaterThan;
-                }
-
-                /*
-                    As written out normally:
-
-                    if lhs_hi < rhs_hi {
-                        true
-                    } else if lhs_hi > rhs_hi {
-                        false
-                    } else {
-                        (lhs_lo as u32) < (rhs_lo as u32)
-                    }
-                */
-
-
-                assert_ne!(dst, lhs);
-                assert_ne!(dst, rhs);
-
-                let op = if op == Relation::LessThan {
-                    "ltu"
-                } else {
-                    "leu"
-                };
-
-                // dst = (lhs_lo as u32) < (rhs_lo as u32);
-                Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op, rhs: rhs.as_lo() }.lower(body, global_list);
-                // if lhs_hi < rhs_hi { dst = true }
-                body.push(format!("execute if score {} reg < {} reg run scoreboard players set {} reg 1", lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
-                // if lhs_hi > rhs_hi { dst = false }
-                body.push(format!("execute if score {} reg > {} reg run scoreboard players set {} reg 0", lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
-            }
-
-            I32Eqz { val, cond } => {
-                body.push(format!("scoreboard players set {} reg 0", cond.get_lo()));
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players set {} reg 1", val.get_lo(), cond.get_lo()));
-            }
-            I64Eqz { val, cond } => {
-                body.push(format!("scoreboard players set {} reg 1", cond.get_lo()));
-                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_lo(), cond.get_lo()));
-                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players set {} reg 0", val.get_hi(), cond.get_lo()));
-            }
-            &I32Op { dst, lhs, op, rhs } => {
-                self.make_i32_op(lhs, op, rhs, body, dst);
-            }
-            I32Extend8S(reg) => {
-                body.push(format!("scoreboard players operation {} reg %= %%256 reg", reg.as_lo()));
-                body.push(format!("execute if score {} reg matches 128..255 run scoreboard players remove {} reg 256", reg.as_lo(), reg.as_lo()))
-            }
-            I32Extend16S(reg) => {
-                body.push(format!("scoreboard players operation {} reg %= %%65536 reg", reg.as_lo()));
-                body.push(format!("execute if score {} reg matches 32768..65535 run scoreboard players remove {} reg 65536", reg.as_lo(), reg.as_lo()))
-            }
-            I32Popcnt(reg) => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg));
-                body.push("function intrinsic:popcnt".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg));
-            }
-            I32Ctz(reg) => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
-                body.push("function intrinsic:ctz".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
-            }
-            I32Clz(reg) => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", reg.get_lo()));
-                body.push("function intrinsic:clz".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", reg.get_lo()));
-            }
-            I64Clz { src, dst } => {
-                assert_ne!(src, dst);
-
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_hi(), src.get_lo()));
-                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_hi(), src.get_hi()));
-                body.push("function intrinsic:clz".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players add {} reg 32", src.get_hi(), dst.get_lo()));
-                body.push(format!("scoreboard players set {} reg 0", dst.get_hi()));
-            }
-            I64Ctz { src, dst } => {
-                assert_ne!(src, dst);
-
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_hi()));
-                body.push(format!("execute unless score {} reg matches 0..0 run scoreboard players operation %param0%0 reg = {} reg", src.get_lo(), src.get_lo()));
-                body.push("function intrinsic:ctz".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players add {} reg 32", src.get_lo(), dst.get_lo()));
-                body.push(format!("scoreboard players set {} reg 0", dst.get_hi()));
-            }
-
-            &PushI32From(reg) => {
-                Instr::push_i32_from(reg, body);
-            }
-            &PushI64From(reg) => {
-                Instr::push_i64_from(reg, body);
-            }
-            PushI64FromSplit { lo, hi } => {
-                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", lo.get_lo()));
-                Self::incr_stack_ptr_half(body);
-
-                body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", hi.get_lo()));
-                Self::incr_stack_ptr_half(body);
-            }
-            PushI32Const(value) => {
-                body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
-                Self::incr_stack_ptr(body);
-            }
-            &PushI64Const(value) => {
-                self.push_i64_const(value, body);
-            }
-            PushReturnAddress(label) => {
-                let return_name = get_block(&label);
-
-                body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value !BLOCKIDX!{}!", return_name));
-                Self::incr_stack_ptr(body);
-            }
-
-            Branch(target) => {
-                body.extend(Instr::jump_begin());
-                body.extend(Instr::branch(target));
-                body.extend(Instr::jump_end());
-            }
-            &DynBranch(reg, table_idx) => {
-                assert_eq!(reg, Register::Work(0));
-
-                if let Some(i) = table_idx {
-                    body.push(format!("function wasm:dyn_branch{}", i));
-                } else {
-                    body.push("function wasm:dyn_branch".to_string());
-                }
-            }
-            BranchIf { t_name, f_name, cond } => {
-                body.push(format!("#   {:?}", self));
-
-                Instr::branch_begin(cond.as_lo(), body);
-                Instr::branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name), body);
-                Instr::branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name), body);
-                Instr::branch_end(body);
-            }
-            BranchTable { reg, targets, default } => {
-                let targets = targets.iter().map(Some);
-
-                Self::lower_branch_table(*reg, targets, default.as_ref(), body);
-            }
-
-            LoadGlobalI64(reg) => {
-                body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-                body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
-            }
-            LoadGlobalI32(reg) => {
-                body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-            }
-            StoreGlobalI64(reg) => {
-                body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-                body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
-            }
-            StoreGlobalI32(reg) => {
-                body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-            }
-
-            &LoadI32(dst, _align) => {
-                body.push("function intrinsic:load_word".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-            }
-            LoadI32_8U(dst, _align) => {
-                body.push("function intrinsic:load_byte".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
-                // TODO: Determine if load_byte actually returns a byte
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
-            }
-            LoadI32_8S(dst, _align) => {
-                body.push("function intrinsic:load_byte".to_string());
-                body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
-                // TODO: Determine if load_byte actually returns a byte
-                body.push(format!("execute if score {} reg matches 128..255 run scoreboard players add {} reg -256", dst.get_lo(), dst.get_lo()));
-            }
-            LoadI32_16U(dst, _align) => {
-                // TODO:
-                body.push("function intrinsic:load_halfword_unaligned".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-                // TODO: Determine if load_halfword actually returns a halfword
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-            }
-            LoadI32_16S(dst, _align) => {
-                // TODO:
-                body.push("function intrinsic:load_halfword_unaligned".to_string());
-                body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
-                // TODO: Determine if load_halfword actually returns a halfword
-                body.push(format!("execute if score {} reg matches 32768..65535 run scoreboard players add {} reg -65536", dst.get_lo(), dst.get_lo()));
-            }
-            &StoreI32(src, _align) => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
-                body.push("function intrinsic:store_word".to_string());
-            }
-            &StoreI32_8(src, _align) => {
-                body.push(format!("scoreboard players operation %param2%0 reg = {} reg", src.get_lo()));
-                body.push("function intrinsic:store_byte".to_string());
-            }
-            &StoreI32_16(src, _align) => {
-                body.push(format!("scoreboard players operation %param0%0 reg = {} reg", src.get_lo()));
-                // TODO:
-                body.push("function intrinsic:store_halfword_unaligned".to_string());
-            }
-
-            StoreRow(src) => {
-                for i in 0..8 {
-                    body.push(format!("execute at @e[tag=memoryptr] store result block ~ ~ ~{} RecordItem.tag.Memory int 1 run scoreboard players get {} reg", i, src.get_lo()))
-                }
-            }
-
-            ResetFrames => {
-                body.push("execute as @e[tag=frameptr] run tp @s 0 0 1".to_string());
-                body.push("scoreboard players set %frameptr wasm 0".to_string());
-            }
-            &PushFrame(local_count) => {
-                if local_count != 0 {
-                    body.push(format!("# Push frame with {} locals", local_count));
-                    body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}}", local_count - 1));
-                    body.push(format!("execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~{} ~ ~", local_count));
-                }
-            }
-            &PopFrame(local_count) => {
-                if local_count != 0 {
-                    body.push(format!("execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~-{} ~ ~", local_count));
-                    body.push(format!("execute at @e[tag=frameptr] run fill ~ ~ ~ ~{} ~ ~1 minecraft:air", local_count - 1));
-                }
-            }
-
-            Drop => {
-                Instr::decr_stack_ptr(body);
-            }
-            SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
-                assert_ne!(dst_reg, false_reg);
-                assert_ne!(dst_reg, cond_reg);
-
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
-                //body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
-
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_lo(), false_reg.get_lo()));
-                //body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.get_hi(), false_reg.get_hi()));
-            }
-            SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
-                assert_ne!(dst_reg, false_reg);
-                assert_ne!(dst_reg, cond_reg);
-
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_lo(), true_reg.get_lo()));
-                body.push(format!("scoreboard players operation {} reg = {} reg", dst_reg.get_hi(), true_reg.get_hi()));
-
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_lo(), false_reg.as_lo()));
-                body.push(format!("execute if score {} reg matches 0..0 run scoreboard players operation {} reg = {} reg", cond_reg.get_lo(), dst_reg.as_hi(), false_reg.as_hi()));
-            }
-
-            Unreachable => {
-                body.push("tellraw @a \"ENTERED UNREACHABLE CODE\"".to_string());
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1694,7 +1772,7 @@ impl FlowStack {
 
         FlowStack(vec![ControlFlowEntry {
             label: Some(exit_label),
-            stack_size: 0,
+            stack_size: 1,
             target_tys,
             else_block: None,
             outputs,
@@ -1716,14 +1794,21 @@ struct FuncBodyStream {
 
 impl FuncBodyStream {
     pub fn new(func_ty: TypeOrFuncType, types: &TypeList, func_idx: CodeFuncIdx) -> Self {
+        let entry_block = BasicBlock::new(func_idx, 0, OpStack(vec![Type::I32]));
+
+        let mut exit_tys = vec![Type::I32];
+        exit_tys.extend(Vec::from(get_output_tys(func_ty, types)));
+
+        let exit_block = BasicBlock::new(func_idx, 1, OpStack(exit_tys));
+
         FuncBodyStream {
             func_idx,
             // 0 is always the entry point, 1 is always the exit point
-            basic_blocks: vec![BasicBlock::new(func_idx, 0), BasicBlock::new(func_idx, 1)],
+            basic_blocks: vec![entry_block, exit_block],
             reachable: vec![true, true],
             bb_index: 0,
             depth: 0,
-            op_stack: OpStack::new(),
+            op_stack: OpStack(vec![Type::I32]),
             flow_stack: FlowStack::new(func_ty, types, Label::new(func_idx, 1)),
         }
     }
@@ -1748,6 +1833,7 @@ impl FuncBodyStream {
                 self.push_instr(Instr::Comment(" Pop return address".to_string()));
                 // Pop return address
                 let reg = Register::Work(0);
+                self.op_stack.pop_i32();
                 self.push_instr(Instr::PopI32Into(reg));
                 self.push_instr(Instr::DynBranch(reg, None));
             }
@@ -1795,7 +1881,7 @@ impl FuncBodyStream {
     }
 
     pub fn next_basic_block(&mut self) {
-        self.bb_index = self.allocate_block();
+        self.bb_index = self.allocate_block(self.op_stack.clone());
     }
 
     pub fn mark_unreachable(&mut self) {
@@ -2008,9 +2094,9 @@ impl FuncBodyStream {
         }
     }
 
-    fn allocate_block(&mut self) -> usize {
+    fn allocate_block(&mut self, op_stack: OpStack) -> usize {
         let idx = self.basic_blocks.len();
-        self.basic_blocks.push(BasicBlock::new(self.func_idx, idx));
+        self.basic_blocks.push(BasicBlock::new(self.func_idx, idx, op_stack));
         self.reachable.push(true);
         idx
     }
@@ -2766,7 +2852,12 @@ impl FuncBodyStream {
                     self.op_stack.pop_ty(ty);
                 }
 
-                let next_block = self.allocate_block();
+                let mut next_block_stack = self.op_stack.clone();
+                for ty in outputs.iter().copied() {
+                    next_block_stack.push_ty(ty);
+                }
+
+                let next_block = self.allocate_block(next_block_stack);
 
                 let entry = ControlFlowEntry {
                     label: Some(Label::new(self.func_idx, next_block)),
@@ -2799,9 +2890,16 @@ impl FuncBodyStream {
                     self.op_stack.pop_ty(ty);
                 }
 
-                let then_block = self.allocate_block();
-                let else_block = self.allocate_block();
-                let next_block = self.allocate_block();
+                let body_stack = self.op_stack.clone();
+
+                let mut end_stack = body_stack.clone();
+                for ty in outputs.iter().copied() {
+                    end_stack.push_ty(ty);
+                }
+
+                let then_block = self.allocate_block(body_stack.clone());
+                let else_block = self.allocate_block(body_stack);
+                let next_block = self.allocate_block(end_stack);
 
                 let then_target = BranchTarget {
                     label: Label::new(self.func_idx, then_block),
@@ -2986,7 +3084,7 @@ impl FuncBodyStream {
                     self.op_stack.pop_ty(ty);
                 }
 
-                let next_block = self.allocate_block();
+                let next_block = self.allocate_block(self.op_stack.clone());
 
                 self.flow_stack.0.push(ControlFlowEntry {
                     label: Some(Label::new(self.func_idx, self.basic_blocks.len())),
@@ -3029,7 +3127,7 @@ impl FuncBodyStream {
                 self.op_stack.pop_i32();
 
                 let t_name = self.get_target(relative_depth);
-                let next_block = self.allocate_block();
+                let next_block = self.allocate_block(self.op_stack.clone());
                 let f_name = BranchTarget {
                     label: self.basic_blocks[next_block].label.clone(),
                     to_pop: 0,
@@ -4143,7 +4241,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
             let func_ty = file.functions.functions[index.0 as usize];
 
             let mut f = FuncBodyStream::new(TypeOrFuncType::FuncType(func_ty), &file.types, index);
-            f.basic_blocks.push(BasicBlock::new(CodeFuncIdx(0), 0));
+            f.basic_blocks.push(BasicBlock::new(CodeFuncIdx(0), 0, OpStack::new()));
 
             if BRANCH_CONV != BranchConv::Direct {
                 f.push_instr(Instr::PushI32Const(-1));
@@ -4159,10 +4257,8 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
 
             //assert_eq!(f.basic_blocks.len(), 1);
 
-            let mut body = Vec::new();
-            for i in f.basic_blocks[0].instrs.iter_mut() {
-                i.lower(&mut body, &file.globals);
-            }
+            let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], &file.globals, None);
+
             let pos = block_pos_from_idx(idx, true);
 
             match BRANCH_CONV {
@@ -4202,7 +4298,7 @@ fn create_return_jumper(basic_blocks: &[BasicBlock<Instr>]) -> String {
     let targets = targets.iter().map(Some);
 
     let mut dyn_branch = Vec::new();
-    Instr::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
+    CodeEmitter::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
     dyn_branch.join("\n")
 }
 
@@ -4220,7 +4316,7 @@ fn create_dyn_jumper(table: &state::Table) -> String {
     let targets = targets.iter().map(|t| t.as_ref());
 
     let mut dyn_branch = Vec::new();
-    Instr::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
+    CodeEmitter::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
     dyn_branch.join("\n")
 }
 
@@ -4661,7 +4757,7 @@ mod test {
             R: IntoIterator<Item=I>,
             I: Into<WasmValue>,
     {
-        let mut bb = BasicBlock::new(CodeFuncIdx(0), 0);
+        let mut bb = BasicBlock::new(CodeFuncIdx(0), 0, OpStack::new());
         bb.instrs = program;
 
         let basic_blocks = [bb];
