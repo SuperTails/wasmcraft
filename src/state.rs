@@ -449,13 +449,6 @@ impl State {
                 println!("Pushing {:?}", v);
                 self.stack.push(Value::I64(v.0, v.1));
             }
-            &PushI64FromSplit { lo, hi } => {
-                let v_lo = self.registers.get_i32(lo);
-                let v_hi = self.registers.get_i32(hi);
-
-                self.stack.push(Value::I64(v_lo, v_hi));
-            }
-
             &PopI32Into(r) => {
                 let v = pop_i32_into(&mut self.stack);
 
@@ -467,12 +460,6 @@ impl State {
                 println!("Popping {:?}", v);
 
                 self.registers.set_pair(r, v);
-            }
-            &PopI64IntoSplit { hi, lo } => {
-                let v = pop_i64_into(&mut self.stack);
-
-                self.registers.set_i32(lo, v.0);
-                self.registers.set_i32(hi, v.1);
             }
 
             Drop => {

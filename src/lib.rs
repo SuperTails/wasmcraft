@@ -10,7 +10,7 @@ use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 use std::str;
 use once_cell::sync::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 
 use state::State;
 
@@ -80,10 +80,9 @@ impl<T> BasicBlock<T> {
 //      Run the CMD to a sync point, because we know the beginning of the target block has one.
 
 impl BasicBlock<Instr> {
-    fn lower(&self, globals: &GlobalList, bb_idx: usize, insert_sync: bool) -> BasicBlock<String> {
-        let sync_bb_idx = if insert_sync { Some(bb_idx) } else { None };
-
-        let instrs = CodeEmitter::emit_all(self, globals, sync_bb_idx);
+    fn lower(&self, globals: &GlobalList, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>) -> BasicBlock<String> {
+        // TODO: Should I use a virtual stack always?
+        let instrs = CodeEmitter::emit_all(self, globals, Some(bb_idx), true, insert_sync, state_info);
 
         BasicBlock {
             op_stack: self.op_stack.clone(),
@@ -179,6 +178,9 @@ impl str::FromStr for HalfRegister {
         } else if let Some(s) = s.strip_prefix("%return%") {
             let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
             Ok(Self(Register::Return(idx), is_hi))
+        } else if let Some(s) = s.strip_prefix("%stack%") {
+            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
+            Ok(Self(Register::Stack(idx), is_hi))
         } else {
             Err(format!("invalid register {}", s))
         }
@@ -203,7 +205,6 @@ enum Instr {
     TurtleGet(Register),
 
     PushI32From(Register),
-    PushI64FromSplit { lo: Register, hi: Register },
     PushI64From(Register),
     PushI32Const(i32),
     PushI64Const(i64),
@@ -249,7 +250,6 @@ enum Instr {
 
     PopI32Into(Register),
     PopI64Into(Register),
-    PopI64IntoSplit { hi: Register, lo: Register },
 
     LoadGlobalI32(Register),
     StoreGlobalI32(Register),
@@ -300,21 +300,51 @@ enum Instr {
     Unreachable,
 }
 
-struct CodeEmitter {
+struct CodeEmitter<'a> {
     pub body: Vec<String>,
-    pub op_stack: OpStack,
 
-    sync_bb_idx: Option<usize>,
+    pub op_stack: OpStack,
+    pub real_stack_size: usize,
+
+    use_virt_stack: bool,
+    insert_sync: bool,
+
+    bb_idx: Option<usize>,
+
+    label: Option<Label>,
+
     sync_instr_idx: usize,
+
+    state_info: Option<&'a StateInfo>,
 }
 
-impl CodeEmitter {
-    pub fn new(op_stack: OpStack, sync_bb_idx: Option<usize>) -> Self {
+impl<'a> CodeEmitter<'a> {
+    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>) -> Self {
+        if bb_idx.is_none() {
+            assert!(!use_virt_stack);
+            assert!(!insert_sync);
+        }
+
+        let op_stack;
+        let real_stack_size;
+        if let Some(state_info) = state_info {
+            op_stack = state_info.entry.op_stack.clone();
+            real_stack_size = state_info.entry.real_size;
+        } else {
+            op_stack = OpStack::new();
+            real_stack_size = 0;
+        }
+
         let mut emitter = CodeEmitter {
             body: Vec::new(),
             op_stack,
-            sync_bb_idx,
+            real_stack_size,
+            bb_idx,
             sync_instr_idx: 0,
+            use_virt_stack,
+            insert_sync,
+            state_info,
+            label,
         };
         
         emitter.emit_sync();
@@ -323,7 +353,7 @@ impl CodeEmitter {
     }
 
     pub fn finalize(mut self) -> Vec<String> {
-        if self.sync_bb_idx.is_some() {
+        if self.insert_sync {
             self.body.pop();
         }
 
@@ -334,11 +364,12 @@ impl CodeEmitter {
         self.body
     }
 
-    pub fn emit_all(basic_block: &BasicBlock<Instr>, global_list: &GlobalList, sync_bb_idx: Option<usize>) -> Vec<String> {
-        println!("\nSTARTING");
-        println!("Opcode stack: {:?}", basic_block.op_stack);
+    pub fn emit_all(basic_block: &BasicBlock<Instr>, global_list: &GlobalList, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
+        println!("\nSTARTING {:?}", basic_block.label);
+        println!("{:?}", state_info);
 
-        let mut emitter = Self::new(basic_block.op_stack.clone(), sync_bb_idx);
+        // The real stack has 1 entry: the return address
+        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()));
         for i in basic_block.instrs.iter() {
             emitter.emit(i, global_list);
         }
@@ -346,11 +377,24 @@ impl CodeEmitter {
     }
 
     fn emit_sync(&mut self) {
-        if let Some(bb_idx) = self.sync_bb_idx {
+        if self.insert_sync {
+            let bb_idx = self.bb_idx.unwrap();
             self.body.push(format!("# !INTERPRETER: SYNC {} {}", bb_idx, self.sync_instr_idx));
         }
 
         self.sync_instr_idx += 1;
+    }
+
+    pub fn emit_drop(&mut self, count: usize) {
+        // TODO: Optimize
+        for _ in 0..count {
+            if self.real_stack_size == self.op_stack.0.len() {
+                self.real_stack_size -= 1;
+            }
+
+            Self::decr_stack_ptr(&mut self.body);
+            self.op_stack.pop_value();
+        }
     }
 
     pub fn emit(&mut self, instr: &Instr, global_list: &GlobalList) {
@@ -427,21 +471,10 @@ impl CodeEmitter {
             }
 
             &PopI32Into(reg) => {           
-                CodeEmitter::pop_i32_into(reg, &mut self.body);
-                self.op_stack.pop_i32();
+                self.emit_pop_i32_into(reg);
             }
             &PopI64Into(reg) => {
-                CodeEmitter::pop_i64_into(reg, &mut self.body);
-                self.op_stack.pop_i64();
-            }
-            PopI64IntoSplit { hi, lo } => {
-                CodeEmitter::decr_stack_ptr_half(&mut self.body);
-                self.body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", hi.get_lo()));
-
-                CodeEmitter::decr_stack_ptr_half(&mut self.body);
-                self.body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", lo.get_lo()));
-
-                self.op_stack.pop_i64();
+                self.emit_pop_i64_into(reg);
             }
 
             LoadLocalI64(reg) => {
@@ -779,32 +812,16 @@ impl CodeEmitter {
             }
 
             &PushI32From(reg) => {
-                Self::push_i32_from(reg, &mut self.body);
-                self.op_stack.push_i32();
+                self.emit_push_i32_from(reg);
             }
             &PushI64From(reg) => {
-                Self::push_i64_from(reg, &mut self.body);
-                self.op_stack.push_i64();
+                self.emit_push_i64_from(reg);
             }
-            PushI64FromSplit { lo, hi } => {
-                self.body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", lo.get_lo()));
-                Self::incr_stack_ptr_half(&mut self.body);
-
-                self.body.push(format!("execute at @e[tag=stackptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", hi.get_lo()));
-                Self::incr_stack_ptr_half(&mut self.body);
-
-                self.op_stack.push_i64();
-            }
-            PushI32Const(value) => {
-                self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
-                Self::incr_stack_ptr(&mut self.body);
-
-                self.op_stack.push_i32();
+            &PushI32Const(value) => {
+                self.emit_push_i32_const(value);
             }
             &PushI64Const(value) => {
-                Self::push_i64_const(value, &mut self.body);
-
-                self.op_stack.push_i64();
+                self.emit_push_i64_const(value);
             }
             PushReturnAddress(label) => {
                 let return_name = get_block(&label);
@@ -813,24 +830,18 @@ impl CodeEmitter {
                 Self::incr_stack_ptr(&mut self.body);
 
                 // TODO: ????
-                self.op_stack.push_i32();
+                //self.op_stack.push_i32();
             }
 
             Branch(target) => {
-                self.body.extend(Self::jump_begin());
-                self.body.extend(Self::branch(target));
-                self.body.extend(Self::jump_end());
-
-                for ty in target.ty.iter().rev() {
-                    self.op_stack.pop_ty(*ty);
-                }
-
-                for _ in 0..target.to_pop {
-                    self.op_stack.pop_value();
-                }
+                self.jump_begin();
+                self.branch(target);
+                self.jump_end();
             }
             &DynBranch(reg, table_idx) => {
                 assert_eq!(reg, Register::Work(0));
+
+                self.emit_stack_save();
 
                 if let Some(i) = table_idx {
                     self.body.push(format!("function wasm:dyn_branch{}", i));
@@ -841,15 +852,15 @@ impl CodeEmitter {
             BranchIf { t_name, f_name, cond } => {
                 self.body.push(format!("#   {:?}", instr));
 
-                Self::branch_begin(cond.as_lo(), &mut self.body);
-                Self::branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name), &mut self.body);
-                Self::branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name), &mut self.body);
-                Self::branch_end(&mut self.body);
+                self.branch_begin(cond.as_lo());
+                self.branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name));
+                self.branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name));
+                self.branch_end();
             }
             BranchTable { reg, targets, default } => {
                 let targets = targets.iter().map(Some);
 
-                Self::lower_branch_table(*reg, targets, default.as_ref(), &mut self.body);
+                self.lower_branch_table(*reg, targets, default.as_ref());
             }
 
             LoadGlobalI64(reg) => {
@@ -936,8 +947,7 @@ impl CodeEmitter {
             }
 
             Drop => {
-                Self::decr_stack_ptr(&mut self.body);
-                self.op_stack.pop_value();
+                self.emit_drop(1);
             }
             SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
                 assert_ne!(dst_reg, false_reg);
@@ -990,6 +1000,169 @@ impl CodeEmitter {
 
         Self::decr_stack_ptr_half(body);
         body.push(format!("execute at @e[tag=stackptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+    }
+
+    pub fn emit_push_i32_const(&mut self, value: i32) {
+        if self.use_virt_stack {
+            assert!(self.op_stack.0.len() >= self.real_stack_size);
+
+            let idx = self.op_stack.0.len();
+
+            self.op_stack.push_i32();
+
+            let stack_reg = Register::Stack(idx as u32).as_lo();
+            self.body.push(format!("scoreboard players set {} reg {}", stack_reg, value));
+        } else {
+            assert_eq!(self.op_stack.0.len(), self.real_stack_size);
+
+            self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
+            Self::incr_stack_ptr(&mut self.body);
+
+            self.op_stack.push_i32();
+            self.real_stack_size += 1;
+        }
+    }
+
+    pub fn emit_push_i64_const(&mut self, value: i64) {
+        if self.use_virt_stack {
+            assert!(self.op_stack.0.len() >= self.real_stack_size);
+
+            let idx = self.op_stack.0.len();
+
+            self.op_stack.push_i64();
+
+            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            self.body.push(format!("scoreboard players set {} reg {}", stack_reg_lo, value as i32));
+            self.body.push(format!("scoreboard players set {} reg {}", stack_reg_hi, (value >> 32) as i32));
+        } else {
+            assert_eq!(self.op_stack.0.len(), self.real_stack_size);
+
+            Self::push_i64_const(value, &mut self.body);
+
+            self.op_stack.push_i64();
+            self.real_stack_size += 1;
+        }
+    }
+
+    pub fn emit_push_from(&mut self, reg: Register, ty: Type) {
+        match ty {
+            Type::I32 => self.emit_push_i32_from(reg),
+            Type::I64 => self.emit_push_i64_from(reg),
+            _ => todo!("{:?}", ty)
+        }
+    }
+
+    pub fn emit_push_i32_from(&mut self, reg: Register) {
+        if self.use_virt_stack {
+            assert!(self.op_stack.0.len() >= self.real_stack_size, "{:?} {}", self.op_stack, self.real_stack_size);
+
+            let idx = self.op_stack.0.len();
+
+            self.op_stack.push_i32();
+
+            // This is just a register copy
+            let stack_reg = Register::Stack(idx as u32).as_lo();
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg, reg.as_lo()));
+        } else {
+            assert!(self.op_stack.0.len() == self.real_stack_size);
+
+            self.real_stack_size += 1;
+            self.op_stack.push_i32();
+
+            Self::push_i32_from(reg, &mut self.body);
+        }
+    }
+
+    pub fn emit_push_i64_from(&mut self, reg: Register) {
+        if self.use_virt_stack {
+            assert!(self.op_stack.0.len() >= self.real_stack_size);
+
+            let idx = self.op_stack.0.len();
+
+            self.op_stack.push_i64();
+
+            // This is just a register copy
+            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_lo, reg.as_lo()));
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_hi, reg.as_hi()));
+        } else {
+            assert!(self.op_stack.0.len() == self.real_stack_size);
+
+            self.real_stack_size += 1;
+            self.op_stack.push_i64();
+
+            Self::push_i64_from(reg, &mut self.body);
+        }
+    }
+
+    pub fn emit_pop_into(&mut self, reg: Register, ty: Type) {
+        match ty {
+            Type::I32 => self.emit_pop_i32_into(reg),
+            Type::I64 => self.emit_pop_i64_into(reg),
+            _ => todo!("{:?}", ty),
+        }
+    }
+
+    pub fn emit_pop_i32_into(&mut self, reg: Register) {
+        assert!(self.op_stack.0.len() >= self.real_stack_size);
+
+        let is_real_stack = self.op_stack.0.len() == self.real_stack_size;
+
+        self.op_stack.pop_i32();
+
+        let idx = self.op_stack.0.len();
+
+        if !self.use_virt_stack {
+            assert!(is_real_stack);
+        }
+
+        if is_real_stack {
+            // We are popping a value off of the real stack
+            Self::pop_i32_into(reg, &mut self.body);
+            self.real_stack_size -= 1;
+        } else {
+            // This is just a register copy
+            let stack_reg = Register::Stack(idx as u32).as_lo();
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_lo(), stack_reg));
+        }
+    }
+
+    pub fn emit_pop_i64_into(&mut self, reg: Register) {
+        assert!(self.op_stack.0.len() >= self.real_stack_size);
+
+        let is_real_stack = self.op_stack.0.len() == self.real_stack_size;
+
+        self.op_stack.pop_i64();
+
+        let idx = self.op_stack.0.len();
+
+        if !self.use_virt_stack {
+            assert!(is_real_stack);
+        }
+
+        if is_real_stack {
+            // We are popping a value off of the real stack
+            Self::pop_i64_into(reg, &mut self.body);
+            self.real_stack_size -= 1;
+        } else {
+            // This is just a register copy
+            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_lo(), stack_reg_lo));
+            self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_hi(), stack_reg_hi));
+        }
+    }
+
+    pub fn emit_stack_save(&mut self) {
+        for idx in self.real_stack_size..self.op_stack.0.len() {
+            let reg = Register::Stack(idx as u32);
+            let ty = self.op_stack.0[idx];
+
+            Self::lower_push_from(reg, ty, &mut self.body);
+            self.real_stack_size += 1;
+        }
     }
 
     pub fn incr_stack_ptr_half(body: &mut Vec<String>) {
@@ -1251,7 +1424,7 @@ impl CodeEmitter {
         Self::incr_stack_ptr_half(body);
     }
 
-    fn add_condition(code: &mut Vec<String>, cond: &str)  {
+    fn add_condition(code: &mut [String], cond: &str)  {
         for c in code.iter_mut() {
             if !c.starts_with('#') {
                 *c = format!("{}{}", cond, *c);
@@ -1259,151 +1432,143 @@ impl CodeEmitter {
         }
     }
 
-    fn branch_begin(cond: HalfRegister, body: &mut Vec<String>) {
+    fn branch_begin(&mut self, cond: HalfRegister) {
         // TODO: This is only necessary for the direct convention
         //if BRANCH_CONV == BranchConv::Direct {
-        body.push("scoreboard players set %%taken wasm 0".to_string());
+        self.body.push("scoreboard players set %%taken wasm 0".to_string());
         //}
 
-        body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
+        self.body.push(format!("scoreboard players operation %%tempcond reg = {} reg", cond));
 
-        body.extend(Self::jump_begin());
+        self.jump_begin();
     }
 
-    fn branch_arm(cond: &str, target: Option<&BranchTarget>, body: &mut Vec<String>) {
-        let mut true_code = if let Some(target) = target {
-            Self::branch(target)
+    fn branch_arm(&mut self, cond: &str, target: Option<&BranchTarget>) {
+        let start_idx = self.body.len();
+
+        if let Some(target) = target {
+            self.branch(target)
         } else {
-            Self::halt()
+            self.halt()
         };
 
-        Self::add_condition(&mut true_code, cond);
-        body.extend(true_code);
+        Self::add_condition(&mut self.body[start_idx..], cond);
     }
 
-    fn branch_end(body: &mut Vec<String>) {
-        body.extend(Self::jump_end());
+    fn branch_end(&mut self) {
+        self.jump_end();
     }
 
-    fn jump_begin() -> Vec<String> {
+    fn jump_begin(&mut self) {
         match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => vec![],
+            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => {},
             BranchConv::Chain => {
-                vec![
-                    // Update command count
-                    "scoreboard players add %cmdcount wasm !COMMANDCOUNT!!".to_string(),
+                // Update command count
+                self.body.push("scoreboard players add %cmdcount wasm !COMMANDCOUNT!!".to_string());
 
-                    // Reset next command to break the chain
-                    //"execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string(),
-                    // Set nextchain to the temporary chain block
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm as @e[tag=nextchain] run tp @s 1 1 -1".to_string(),
-                ]
+                // Reset next command to break the chain
+                //"execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string(),
+                self.body.push("execute if score %cmdcount wasm >= %maxcmdcount wasm at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string());
+                // Set nextchain to the temporary chain block
+                self.body.push("execute if score %cmdcount wasm >= %maxcmdcount wasm as @e[tag=nextchain] run tp @s 1 1 -1".to_string());
             }
         }
     }
 
-    fn jump_end() -> Vec<String> {
+    fn jump_end(&mut self) {
         match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => { vec![] }
+            BranchConv::Grid | BranchConv::Direct | BranchConv::Loop => {}
             BranchConv::Chain => {
-                vec![
-                    // Activate start block
-                    "execute if score %cmdcount wasm >= %maxcmdcount wasm run setblock 0 1 -1 minecraft:redstone_block replace".to_string(),
+                // Activate start block
+                self.body.push("execute if score %cmdcount wasm >= %maxcmdcount wasm run setblock 0 1 -1 minecraft:redstone_block replace".to_string());
 
-                    // Set nextchain to this block
-                    "execute if score %cmdcount wasm < %maxcmdcount wasm as @e[tag=nextchain] run tp @s ~ ~ ~".to_string(),
-                ]
+                // Set nextchain to this block
+                self.body.push("execute if score %cmdcount wasm < %maxcmdcount wasm as @e[tag=nextchain] run tp @s ~ ~ ~".to_string());
             }
         }
     }
 
-    fn halt() -> Vec<String> {
+    fn halt(&mut self) {
         match BRANCH_CONV {
-            BranchConv::Grid | BranchConv::Loop | BranchConv::Direct => { Vec::new() }
+            BranchConv::Grid | BranchConv::Loop | BranchConv::Direct => {}
             BranchConv::Chain => {
-                vec![
-                    //"execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()
-                    "execute at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string()
-                ]
+                //"execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"\"".to_string()
+                self.body.push("execute at @e[tag=nextchain] run setblock ~ ~ ~ minecraft:air".to_string())
             }
         }
     }
 
-    fn jump(entry: &Label) -> Vec<String> {
+    fn jump(&mut self, entry: &Label) {
+        if let Some(label) = &self.label {
+            if label.func_idx != entry.func_idx {
+                self.emit_stack_save();
+            } else if let Some(info) = self.state_info {
+                let state = &info.exit.iter().find(|(idx, _state)| *idx == entry.idx).unwrap().1;
+                assert_eq!(self.op_stack, state.op_stack);
+                if self.real_stack_size != state.real_size {
+                    todo!()
+                }
+            }
+        }
+
         let entry = get_block(entry);
 
-        let mut body = Vec::new();
-
-        body.push(format!("#   Jump to {}", entry));
+        self.body.push(format!("#   Jump to {}", entry));
         match BRANCH_CONV {
             BranchConv::Grid => {
-                body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
+                self.body.push(format!("setblock !BLOCKPOS!{}! minecraft:redstone_block destroy", entry));
             }
             BranchConv::Chain => {
-                body.push(format!("execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"function wasm:{}\"", entry));
+                self.body.push(format!("execute at @e[tag=nextchain] run data modify block ~ ~ ~ Command set value \"function wasm:{}\"", entry));
             }
             BranchConv::Direct => {
-                body.push(format!("function wasm:{}", entry));
+                self.body.push(format!("function wasm:{}", entry));
             }
             c => todo!("{:?}", c)
         }
-
-        body
     }
 
-    fn lower_drop(body: &mut Vec<String>) {
-        Self::decr_stack_ptr(body)
-    }
-
-    fn branch(target: &BranchTarget) -> Vec<String> {
-        let mut body = Vec::new();
-
+    fn branch(&mut self, target: &BranchTarget) {
         let entry = get_block(&target.label);
 
-        body.push(format!("#   Branch to {}", entry));
+        self.body.push(format!("#   Branch to {}", entry));
         for (idx, ty) in target.ty.iter().enumerate().rev() {
             // TODO: Should I use the return register?
-            Self::lower_pop_into(Register::Return(idx as u32), *ty, &mut body);
+            self.emit_pop_into(Register::Return(idx as u32), *ty);
         }
 
-        // TODO: Optimize
-        for _ in 0..target.to_pop {
-            Self::lower_drop(&mut body);
-        }
+        self.emit_drop(target.to_pop);
 
         for (idx, ty) in target.ty.iter().enumerate() {
-            Self::lower_push_from(Register::Return(idx as u32), *ty, &mut body);
+            self.emit_push_from(Register::Return(idx as u32), *ty);
         }
 
-        body.extend(Self::jump(&target.label));
-
-        body
+        self.jump(&target.label);
     }
 
 
-    pub fn lower_branch_table<'a, I>(reg: Register, targets: I, default: Option<&BranchTarget>, body: &mut Vec<String>)
-        where I: ExactSizeIterator<Item=Option<&'a BranchTarget>>,
+    pub fn lower_branch_table<'b, I>(&mut self, reg: Register, targets: I, default: Option<&BranchTarget>)
+        where I: ExactSizeIterator<Item=Option<&'b BranchTarget>>,
     {
         let num_targets = targets.len();
 
         if num_targets == 0 {
-            body.extend(Self::jump_begin());
-            body.extend(Self::branch(default.as_ref().unwrap()));
-            body.extend(Self::jump_end());
+            self.jump_begin();
+            self.branch(default.as_ref().unwrap());
+            self.jump_end();
         } else {
-            Self::branch_begin(reg.as_lo(), body);
+            self.branch_begin(reg.as_lo());
 
             for (idx, target) in targets.enumerate() {
                 let cond = format!("execute if score %%taken wasm matches 0 if score %%tempcond reg matches {}..{} run ", idx, idx);
 
-                Self::branch_arm(&cond, target, body);
+                self.branch_arm(&cond, target);
             }
 
             let cond = format!("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..{} run ", num_targets - 1);
-            Self::branch_arm(&cond, default, body);
+            self.branch_arm(&cond, default);
 
-            Self::branch_end(body);
+            self.branch_end();
         }
     }
 
@@ -1425,7 +1590,7 @@ impl CodeEmitter {
 
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OpStack(Vec<Type>);
 
 impl OpStack {
@@ -1609,7 +1774,6 @@ impl Instr {
             I32Op { dst, lhs, op, rhs } => {},
             PopValueInto(_) => op_stack.pop_value(),
             PopI32Into(_) => op_stack.pop_i32(),
-            PopI64IntoSplit { hi, lo } => op_stack.pop_i64(),
             LoadGlobalI32(_) => {},
             StoreGlobalI32(_) => {},
             LoadGlobalI64(_) => {},
@@ -1648,6 +1812,7 @@ enum Register {
     Work(u32),
     Param(u32),
     Return(u32),
+    Stack(u32),
 }
 
 impl Register {
@@ -1670,6 +1835,9 @@ impl Register {
             Register::Return(i) => {
                 format!("%return%{}%lo", i)
             }
+            Register::Stack(i) => {
+                format!("%stack%{}%lo", i)
+            }
         }
     }
 
@@ -1683,6 +1851,9 @@ impl Register {
             }
             Register::Return(i) => {
                 format!("%return%{}%hi", i)
+            }
+            Register::Stack(i) => {
+                format!("%stack%{}%hi", i)
             }
         }
     }
@@ -1790,6 +1961,220 @@ struct FuncBodyStream {
 
     op_stack: OpStack,
     flow_stack: FlowStack,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StackState {
+    op_stack: OpStack,
+    real_size: usize,
+}
+
+impl StackState {
+    pub fn new() -> Self {
+        StackState {
+            op_stack: OpStack::new(),
+            real_size: 0,
+        }
+    }
+}
+
+fn calc_exit_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> StackState {
+    let mut state = entry_state;
+
+
+    state
+}
+
+fn get_first_term_instr(basic_block: &BasicBlock<Instr>) -> usize {
+    // TODO: Internal branches
+    basic_block.instrs.iter().enumerate().find_map(|(idx, instr)| {
+        match instr {
+            Instr::Branch(_) => {
+                Some(idx)
+            }
+            Instr::BranchIf { .. } => {
+                Some(idx)
+            }
+            Instr::BranchTable { .. } => {
+                Some(idx)
+            }
+            Instr::DynBranch(_, _) => {
+                Some(idx)
+            }
+            _ => None
+        }
+    }).unwrap_or(basic_block.instrs.len())
+}
+
+fn get_body_instrs(basic_block: &BasicBlock<Instr>) -> &[Instr] {
+    let idx = get_first_term_instr(basic_block);
+    &basic_block.instrs[..idx]
+}
+
+fn get_term_instrs(basic_block: &BasicBlock<Instr>) -> &[Instr] {
+    let idx = get_first_term_instr(basic_block);
+    &basic_block.instrs[idx..]
+}
+
+fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> Vec<(usize, StackState)> {
+    let body = get_body_instrs(basic_block);
+    let term = get_term_instrs(basic_block);
+
+    let mut state = entry_state;
+
+    let mut return_addr = None;
+
+    for instr in body.iter() {
+        match instr {
+            Instr::PushReturnAddress(l) => {
+                // The return address is considered to be on the callee's stack
+                assert!(return_addr.is_none());
+                return_addr = Some(l);
+            }
+            Instr::Drop => {
+                if state.real_size == state.op_stack.0.len() {
+                    state.real_size -= 1;
+                }
+
+                state.op_stack.pop_value();
+            }
+            Instr::PushI32Const(_) => state.op_stack.push_i32(),
+            Instr::PushI64Const(_) => state.op_stack.push_i64(),
+            Instr::PushI32From(..) => state.op_stack.push_i32(),
+            Instr::PushI64From(..) => state.op_stack.push_i64(),
+            Instr::PopI32Into(..) => {
+                if state.real_size == state.op_stack.0.len() {
+                    state.real_size -= 1;
+                }
+
+                state.op_stack.pop_i32();
+            },
+            Instr::PopI64Into(..) => {
+                if state.real_size == state.op_stack.0.len() {
+                    state.real_size -= 1;
+                }
+
+                state.op_stack.pop_i64();
+            },
+            Instr::Branch(t) => {
+                for ty in t.ty.iter() {
+                    state.op_stack.pop_ty(*ty);                   
+                }
+
+                for _ in 0..t.to_pop {
+                    state.op_stack.pop_value();
+                }
+
+                if t.label.func_idx != basic_block.label.func_idx {
+                    state.real_size = state.op_stack.0.len();
+                }
+            },
+            Instr::BranchIf { .. } => todo!(),
+            Instr::BranchTable { .. } => todo!(),
+            Instr::DynBranch(..) => {
+                state.real_size = state.op_stack.0.len();
+            }, 
+            _ => {}
+        }
+    }
+
+    term.iter().flat_map(|t| {
+        match t {
+            Instr::Branch(t) => {
+                vec![t]
+            }
+            Instr::BranchIf { t_name, f_name, .. } => {
+                vec![t_name, f_name]
+            }
+            Instr::BranchTable { targets, default, .. } => {
+                let mut result = Vec::new();
+
+                result.extend(targets.iter());
+                result.extend(default.iter());
+
+                result
+            }
+            Instr::DynBranch(..) => {
+                vec![]
+            }
+            _ => todo!("{:?}", t)
+        }
+    }).map(|t| {
+        let mut state = state.clone();
+
+        for ty in t.ty.iter().rev() {
+            state.op_stack.pop_ty(*ty);                   
+        }
+
+        for _ in 0..t.to_pop {
+            state.op_stack.pop_value();
+        }
+
+        if state.real_size > state.op_stack.0.len() || t.label.func_idx != basic_block.label.func_idx {
+            state.real_size = state.op_stack.0.len();
+        }
+
+        for ty in t.ty.iter() {
+            state.op_stack.push_ty(*ty);
+        }
+
+        if t.label.func_idx != basic_block.label.func_idx {
+            (return_addr.unwrap().idx, state)
+        } else {
+            (t.label.idx, state)
+        }
+    }).collect()
+}
+
+#[derive(Debug)]
+struct StateInfo {
+    entry: StackState,
+    exit: Vec<(usize, StackState)>,
+}
+
+impl StateInfo {
+    fn new(basic_block: &BasicBlock<Instr>, entry: StackState) -> Self {
+        let exit = get_next_state(basic_block, entry.clone());
+        StateInfo { entry, exit }
+    }
+}
+
+fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<StateInfo>> {
+    let mut states = BTreeMap::new();
+
+    let entry_state = StackState {
+        op_stack: OpStack(vec![Type::I32]),
+        real_size: 1,
+    };
+
+    let start_state = StateInfo::new(&basic_blocks[0], entry_state);
+
+    states.insert(0, start_state);
+
+    let mut to_visit = vec![0];
+
+    while let Some(block) = to_visit.pop() {
+        let info = states.get(&block).unwrap();
+        let exit = info.exit.clone();
+
+        for (next_idx, next_state) in exit.iter() {
+            let next_block = &basic_blocks[*next_idx];
+
+            let changed = if let Some(prev) = states.get(next_idx) {
+                prev.entry != *next_state
+            } else {
+                true
+            };
+
+            if changed {
+                let next_info = StateInfo::new(next_block, next_state.clone());
+                states.insert(*next_idx, next_info);
+                to_visit.push(*next_idx);
+            }
+        }
+    }
+
+    (0..basic_blocks.len()).map(|idx| states.remove(&idx)).collect::<Vec<Option<StateInfo>>>()
 }
 
 impl FuncBodyStream {
@@ -2305,8 +2690,11 @@ impl FuncBodyStream {
                 let dreg_lo = Register::Work(1);
                 let areg = Register::Work(0);
 
-                self.push_instr(Instr::PopI64IntoSplit { hi: dreg_hi, lo: dreg_lo });
+                self.push_instr(Instr::PopI64Into(dreg_lo));
                 self.op_stack.pop_i64();
+
+                // TODO: Remove
+                self.push_instr(Instr::Copy { dst: dreg_hi.as_lo(), src: dreg_lo.as_hi() });
 
                 self.push_instr(Instr::PopI32Into(areg));
                 self.op_stack.pop_i32();
@@ -2333,7 +2721,11 @@ impl FuncBodyStream {
                 self.push_instr(Instr::SetMemPtr(areg));
                 self.push_instr(Instr::LoadI32(dreg_hi, memarg.align));
 
-                self.push_instr(Instr::PushI64FromSplit { lo: dreg_lo, hi: dreg_hi });
+                // TODO: Remove
+                self.push_instr(Instr::Copy { dst: dreg_lo.as_hi(), src: dreg_hi.as_lo() });
+
+                self.push_instr(Instr::PushI64From(dreg_lo));
+
                 self.op_stack.push_i64();
             }
             I64Load8U { memarg } => {
@@ -3914,7 +4306,6 @@ fn link_intrinsics(file: &mut WasmFile) {
 }
 
 fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
-
     let mut basic_blocks = Vec::new();
 
     let mut func_idx = CodeFuncIdx(file.imports.num_funcs() as u32);
@@ -3942,8 +4333,10 @@ fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
         }
         assert!(s.op_stack.0.is_empty(), "{:?}", s.op_stack);
 
-        for bb in s.basic_blocks {
-            basic_blocks.push(bb);
+        for (idx, bb) in s.basic_blocks.into_iter().enumerate() {
+            if s.reachable[idx] {
+                basic_blocks.push(bb);
+            }
         }
 
         func_idx.0 += 1;
@@ -4068,11 +4461,59 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
 
 }
 
+struct BBGroupBy<'a> {
+    list: &'a [BasicBlock<Instr>]
+}
+
+impl<'a> Iterator for BBGroupBy<'a> {
+    type Item = &'a [BasicBlock<Instr>];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((head, tail)) = self.list.split_first() {
+            let to_match = head.label.func_idx;
+
+            let mut idx = 0;
+            for (i, elem) in tail.iter().enumerate() {
+                if elem.label.func_idx == to_match {
+                    idx = i + 1;
+                }
+            }
+
+            let result = &self.list[..idx + 1];
+            self.list = &tail[idx..];
+
+            Some(result)
+        } else {
+            None
+        }
+    }
+}
+
+fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<StateInfo>> {
+    let mut stack_states = Vec::new();
+    
+    let iter = BBGroupBy { list: basic_blocks };
+
+    for group in iter {
+        stack_states.extend(find_real_stack_sizes(group));
+    }
+
+    stack_states
+}
+
 fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
+    let stack_states = get_stack_states(basic_blocks);
+
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
-        let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync);
+        let state = if let Some(state) = &stack_states[bb_idx] {
+            state
+        } else {
+            continue
+        };
+
+        let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync, Some(state));
         let name = get_block(&new_block.label);
 
         //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
@@ -4257,7 +4698,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
 
             //assert_eq!(f.basic_blocks.len(), 1);
 
-            let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], &file.globals, None);
+            let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], &file.globals, None, false, false, None);
 
             let pos = block_pos_from_idx(idx, true);
 
@@ -4297,8 +4738,10 @@ fn create_return_jumper(basic_blocks: &[BasicBlock<Instr>]) -> String {
     
     let targets = targets.iter().map(Some);
 
-    let mut dyn_branch = Vec::new();
-    CodeEmitter::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
+    let mut emitter = CodeEmitter::new(None, false, false, None, None);
+    emitter.lower_branch_table(Register::Work(0), targets, None);
+    let dyn_branch = emitter.finalize();
+
     dyn_branch.join("\n")
 }
 
@@ -4315,8 +4758,10 @@ fn create_dyn_jumper(table: &state::Table) -> String {
 
     let targets = targets.iter().map(|t| t.as_ref());
 
-    let mut dyn_branch = Vec::new();
-    CodeEmitter::lower_branch_table(Register::Work(0), targets, None, &mut dyn_branch);
+    let mut emitter = CodeEmitter::new(None, false, false, None, None);
+    emitter.lower_branch_table(Register::Work(0), targets, None);
+    let dyn_branch = emitter.finalize();
+    
     dyn_branch.join("\n")
 }
 
