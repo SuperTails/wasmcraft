@@ -390,9 +390,10 @@ impl<'a> CodeEmitter<'a> {
         for _ in 0..count {
             if self.real_stack_size == self.op_stack.0.len() {
                 self.real_stack_size -= 1;
+
+                Self::decr_stack_ptr(&mut self.body);
             }
 
-            Self::decr_stack_ptr(&mut self.body);
             self.op_stack.pop_value();
         }
     }
@@ -826,6 +827,8 @@ impl<'a> CodeEmitter<'a> {
             PushReturnAddress(label) => {
                 let return_name = get_block(&label);
 
+                self.emit_stack_save();
+
                 self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value !BLOCKIDX!{}!", return_name));
                 Self::incr_stack_ptr(&mut self.body);
 
@@ -1155,14 +1158,27 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
-    pub fn emit_stack_save(&mut self) {
-        for idx in self.real_stack_size..self.op_stack.0.len() {
+    pub fn emit_real_stack_resize(&mut self, target_size: usize) {
+        if self.real_stack_size < target_size {
+            self.emit_stack_save_to(target_size);
+        } else if self.real_stack_size > target_size {
+            todo!()
+        }
+    }
+
+    pub fn emit_stack_save_to(&mut self, target_size: usize) {
+        assert!(self.real_stack_size <= target_size);
+        for idx in self.real_stack_size..target_size {
             let reg = Register::Stack(idx as u32);
             let ty = self.op_stack.0[idx];
 
             Self::lower_push_from(reg, ty, &mut self.body);
             self.real_stack_size += 1;
         }
+    }
+
+    pub fn emit_stack_save(&mut self) {
+        self.emit_stack_save_to(self.op_stack.0.len());
     }
 
     pub fn incr_stack_ptr_half(body: &mut Vec<String>) {
@@ -1505,9 +1521,7 @@ impl<'a> CodeEmitter<'a> {
             } else if let Some(info) = self.state_info {
                 let state = &info.exit.iter().find(|(idx, _state)| *idx == entry.idx).unwrap().1;
                 assert_eq!(self.op_stack, state.op_stack);
-                if self.real_stack_size != state.real_size {
-                    todo!()
-                }
+                self.emit_real_stack_resize(state.real_size);
             }
         }
 
@@ -1529,6 +1543,9 @@ impl<'a> CodeEmitter<'a> {
     }
 
     fn branch(&mut self, target: &BranchTarget) {
+        let old_state = self.op_stack.clone();
+        let old_size = self.real_stack_size;
+
         let entry = get_block(&target.label);
 
         self.body.push(format!("#   Branch to {}", entry));
@@ -1544,6 +1561,9 @@ impl<'a> CodeEmitter<'a> {
         }
 
         self.jump(&target.label);
+
+        self.op_stack = old_state;
+        self.real_stack_size = old_size;
     }
 
 
@@ -2016,6 +2036,76 @@ fn get_term_instrs(basic_block: &BasicBlock<Instr>) -> &[Instr] {
     &basic_block.instrs[idx..]
 }
 
+fn get_reachable_blocks(body: &[BasicBlock<Instr>]) -> Vec<bool> {
+    let mut reachable = vec![false; body.len()];
+    let mut to_visit = vec![0];
+
+    while let Some(block) = to_visit.pop() {
+        if reachable[block] {
+            // This block has already been visited
+            continue
+        }
+
+        reachable[block] = true;
+        for idx in get_next_blocks(&body[block]) {
+            to_visit.push(idx);
+        }
+    }
+
+    reachable
+}
+
+fn get_next_blocks(basic_block: &BasicBlock<Instr>) -> Vec<usize> {
+    let body = get_body_instrs(basic_block);
+    let term = get_term_instrs(basic_block);
+
+    let mut return_addr = None;
+
+    for instr in body.iter() {
+        match instr {
+            Instr::PushReturnAddress(l) => {
+                // The return address is considered to be on the callee's stack
+                assert!(return_addr.is_none());
+                return_addr = Some(l);
+            }
+            Instr::Branch(t) => todo!(),
+            Instr::BranchIf { .. } => todo!(),
+            Instr::BranchTable { .. } => todo!(),
+            Instr::DynBranch(..) => todo!(),
+            _ => {}
+        }
+    }
+
+    term.iter().flat_map(|t| {
+        match t {
+            Instr::Branch(t) => {
+                vec![t]
+            }
+            Instr::BranchIf { t_name, f_name, .. } => {
+                vec![t_name, f_name]
+            }
+            Instr::BranchTable { targets, default, .. } => {
+                let mut result = Vec::new();
+
+                result.extend(targets.iter());
+                result.extend(default.iter());
+
+                result
+            }
+            Instr::DynBranch(..) => {
+                vec![]
+            }
+            _ => todo!("{:?}", t)
+        }
+    }).map(|t| {
+        if t.label.func_idx != basic_block.label.func_idx {
+            return_addr.unwrap().idx
+        } else {
+            t.label.idx
+        }
+    }).collect()
+}
+
 fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> Vec<(usize, StackState)> {
     let body = get_body_instrs(basic_block);
     let term = get_term_instrs(basic_block);
@@ -2078,7 +2168,9 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
         }
     }
 
-    term.iter().flat_map(|t| {
+    let mut result = HashMap::new();
+
+    let next_blocks = term.iter().flat_map(|t| {
         match t {
             Instr::Branch(t) => {
                 vec![t]
@@ -2123,10 +2215,20 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
         } else {
             (t.label.idx, state)
         }
-    }).collect()
+    });
+
+    for next_block in next_blocks {
+        if let Some(existing) = result.get(&next_block.0) {
+            assert_eq!(existing, &next_block.1);
+        } else {
+            result.insert(next_block.0, next_block.1);
+        }
+    }
+
+    result.into_iter().collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct StateInfo {
     entry: StackState,
     exit: Vec<(usize, StackState)>,
@@ -2139,7 +2241,7 @@ impl StateInfo {
     }
 }
 
-fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<StateInfo>> {
+fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     let mut states = BTreeMap::new();
 
     let entry_state = StackState {
@@ -2158,7 +2260,7 @@ fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<State
         let exit = info.exit.clone();
 
         for (next_idx, next_state) in exit.iter() {
-            let next_block = &basic_blocks[*next_idx];
+            let next_block = &basic_blocks.iter().find(|bb| bb.label.idx == *next_idx).unwrap();
 
             let changed = if let Some(prev) = states.get(next_idx) {
                 prev.entry != *next_state
@@ -2174,7 +2276,9 @@ fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<State
         }
     }
 
-    (0..basic_blocks.len()).map(|idx| states.remove(&idx)).collect::<Vec<Option<StateInfo>>>()
+    assert_eq!(states.len(), basic_blocks.len());
+
+    basic_blocks.iter().map(|bb| states.remove(&bb.label.idx).unwrap()).collect()
 }
 
 impl FuncBodyStream {
@@ -4333,8 +4437,10 @@ fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
         }
         assert!(s.op_stack.0.is_empty(), "{:?}", s.op_stack);
 
+        let reachable = get_reachable_blocks(&s.basic_blocks);
+
         for (idx, bb) in s.basic_blocks.into_iter().enumerate() {
-            if s.reachable[idx] {
+            if reachable[idx] {
                 basic_blocks.push(bb);
             }
         }
@@ -4489,7 +4595,7 @@ impl<'a> Iterator for BBGroupBy<'a> {
     }
 }
 
-fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<Option<StateInfo>> {
+fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     let mut stack_states = Vec::new();
     
     let iter = BBGroupBy { list: basic_blocks };
@@ -4507,13 +4613,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
     let stack_states = get_stack_states(basic_blocks);
 
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
-        let state = if let Some(state) = &stack_states[bb_idx] {
-            state
-        } else {
-            continue
-        };
-
-        let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync, Some(state));
+        let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync, Some(&stack_states[bb_idx]));
         let name = get_block(&new_block.label);
 
         //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
