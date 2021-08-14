@@ -2079,29 +2079,29 @@ fn get_next_blocks(basic_block: &BasicBlock<Instr>) -> Vec<usize> {
     term.iter().flat_map(|t| {
         match t {
             Instr::Branch(t) => {
-                vec![t]
+                vec![&t.label]
             }
             Instr::BranchIf { t_name, f_name, .. } => {
-                vec![t_name, f_name]
+                vec![&t_name.label, &f_name.label]
             }
             Instr::BranchTable { targets, default, .. } => {
                 let mut result = Vec::new();
 
-                result.extend(targets.iter());
-                result.extend(default.iter());
+                result.extend(targets.iter().map(|t| &t.label));
+                result.extend(default.iter().map(|t| &t.label));
 
                 result
             }
             Instr::DynBranch(..) => {
-                vec![]
+                return_addr.clone().into_iter().collect()
             }
             _ => todo!("{:?}", t)
         }
     }).map(|t| {
-        if t.label.func_idx != basic_block.label.func_idx {
+        if t.func_idx != basic_block.label.func_idx {
             return_addr.unwrap().idx
         } else {
-            t.label.idx
+            t.idx
         }
     }).collect()
 }
@@ -2173,21 +2173,29 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
     let next_blocks = term.iter().flat_map(|t| {
         match t {
             Instr::Branch(t) => {
-                vec![t]
+                vec![t.clone()]
             }
             Instr::BranchIf { t_name, f_name, .. } => {
-                vec![t_name, f_name]
+                vec![t_name.clone(), f_name.clone()]
             }
             Instr::BranchTable { targets, default, .. } => {
                 let mut result = Vec::new();
 
-                result.extend(targets.iter());
-                result.extend(default.iter());
+                result.extend(targets.iter().cloned());
+                result.extend(default.iter().cloned());
 
                 result
             }
             Instr::DynBranch(..) => {
-                vec![]
+                if let Some(return_addr) = return_addr {
+                    vec![BranchTarget {
+                        label: return_addr.clone(),
+                        to_pop: 0,
+                        ty: Box::new([]),
+                    }]
+                } else {
+                    Vec::new()
+                }
             }
             _ => todo!("{:?}", t)
         }
