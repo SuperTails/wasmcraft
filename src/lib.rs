@@ -4456,7 +4456,7 @@ fn run_ir(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
     let mut state = setup_state(basic_blocks, file);
 
     loop {
-        if state.step() { break }
+        if state.step().unwrap() { break }
     }
     
     state
@@ -5158,7 +5158,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
 
     return_types.iter().enumerate()
         .map(|(idx, ty)| {
-            mir.registers.get_typed(Register::Return(idx as u32), *ty)
+            mir.registers.get_typed(Register::Return(idx as u32), *ty).unwrap()
         })
         .collect()
 }
