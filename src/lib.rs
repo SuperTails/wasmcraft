@@ -303,10 +303,8 @@ enum Instr {
 struct CodeEmitter<'a> {
     pub body: Vec<String>,
 
-    pub op_stack: OpStack,
-    pub real_stack_size: usize,
+    pub op_stack: RealOpStack,
 
-    use_virt_stack: bool,
     insert_sync: bool,
 
     bb_idx: Option<usize>,
@@ -325,23 +323,20 @@ impl<'a> CodeEmitter<'a> {
             assert!(!insert_sync);
         }
 
-        let op_stack;
-        let real_stack_size;
+        let mut op_stack;
         if let Some(state_info) = state_info {
-            op_stack = state_info.entry.op_stack.clone();
-            real_stack_size = state_info.entry.real_size;
+            op_stack = state_info.entry.clone();
+            // FIXME:
+            op_stack.use_virtual = use_virt_stack;
         } else {
-            op_stack = OpStack::new();
-            real_stack_size = 0;
+            op_stack = RealOpStack::new(use_virt_stack);
         }
 
         let mut emitter = CodeEmitter {
             body: Vec::new(),
             op_stack,
-            real_stack_size,
             bb_idx,
             sync_instr_idx: 0,
-            use_virt_stack,
             insert_sync,
             state_info,
             label,
@@ -388,13 +383,11 @@ impl<'a> CodeEmitter<'a> {
     pub fn emit_drop(&mut self, count: usize) {
         // TODO: Optimize
         for _ in 0..count {
-            if self.real_stack_size == self.op_stack.0.len() {
-                self.real_stack_size -= 1;
+            let was_real = self.op_stack.pop_value().1;
 
+            if was_real {
                 Self::decr_stack_ptr(&mut self.body);
             }
-
-            self.op_stack.pop_value();
         }
     }
 
@@ -1006,31 +999,24 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_push_i32_const(&mut self, value: i32) {
-        if self.use_virt_stack {
-            assert!(self.op_stack.0.len() >= self.real_stack_size);
-
-            let idx = self.op_stack.0.len();
+        if self.op_stack.use_virtual {
+            let idx = self.op_stack.stack.0.len();
 
             self.op_stack.push_i32();
 
             let stack_reg = Register::Stack(idx as u32).as_lo();
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg, value));
         } else {
-            assert_eq!(self.op_stack.0.len(), self.real_stack_size);
-
             self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
             Self::incr_stack_ptr(&mut self.body);
 
             self.op_stack.push_i32();
-            self.real_stack_size += 1;
         }
     }
 
     pub fn emit_push_i64_const(&mut self, value: i64) {
-        if self.use_virt_stack {
-            assert!(self.op_stack.0.len() >= self.real_stack_size);
-
-            let idx = self.op_stack.0.len();
+        if self.op_stack.use_virtual {
+            let idx = self.op_stack.stack.0.len();
 
             self.op_stack.push_i64();
 
@@ -1039,12 +1025,9 @@ impl<'a> CodeEmitter<'a> {
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg_lo, value as i32));
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg_hi, (value >> 32) as i32));
         } else {
-            assert_eq!(self.op_stack.0.len(), self.real_stack_size);
-
             Self::push_i64_const(value, &mut self.body);
 
             self.op_stack.push_i64();
-            self.real_stack_size += 1;
         }
     }
 
@@ -1057,10 +1040,8 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_push_i32_from(&mut self, reg: Register) {
-        if self.use_virt_stack {
-            assert!(self.op_stack.0.len() >= self.real_stack_size, "{:?} {}", self.op_stack, self.real_stack_size);
-
-            let idx = self.op_stack.0.len();
+        if self.op_stack.use_virtual {
+            let idx = self.op_stack.stack.0.len();
 
             self.op_stack.push_i32();
 
@@ -1068,9 +1049,6 @@ impl<'a> CodeEmitter<'a> {
             let stack_reg = Register::Stack(idx as u32).as_lo();
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg, reg.as_lo()));
         } else {
-            assert!(self.op_stack.0.len() == self.real_stack_size);
-
-            self.real_stack_size += 1;
             self.op_stack.push_i32();
 
             Self::push_i32_from(reg, &mut self.body);
@@ -1078,10 +1056,8 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_push_i64_from(&mut self, reg: Register) {
-        if self.use_virt_stack {
-            assert!(self.op_stack.0.len() >= self.real_stack_size);
-
-            let idx = self.op_stack.0.len();
+        if self.op_stack.use_virtual {
+            let idx = self.op_stack.stack.0.len();
 
             self.op_stack.push_i64();
 
@@ -1091,9 +1067,6 @@ impl<'a> CodeEmitter<'a> {
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_lo, reg.as_lo()));
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_hi, reg.as_hi()));
         } else {
-            assert!(self.op_stack.0.len() == self.real_stack_size);
-
-            self.real_stack_size += 1;
             self.op_stack.push_i64();
 
             Self::push_i64_from(reg, &mut self.body);
@@ -1109,22 +1082,13 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_pop_i32_into(&mut self, reg: Register) {
-        assert!(self.op_stack.0.len() >= self.real_stack_size);
+        let is_real = self.op_stack.pop_i32();
 
-        let is_real_stack = self.op_stack.0.len() == self.real_stack_size;
+        let idx = self.op_stack.stack.0.len();
 
-        self.op_stack.pop_i32();
-
-        let idx = self.op_stack.0.len();
-
-        if !self.use_virt_stack {
-            assert!(is_real_stack);
-        }
-
-        if is_real_stack {
+        if is_real {
             // We are popping a value off of the real stack
             Self::pop_i32_into(reg, &mut self.body);
-            self.real_stack_size -= 1;
         } else {
             // This is just a register copy
             let stack_reg = Register::Stack(idx as u32).as_lo();
@@ -1133,22 +1097,13 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_pop_i64_into(&mut self, reg: Register) {
-        assert!(self.op_stack.0.len() >= self.real_stack_size);
+        let is_real = self.op_stack.pop_i64();
 
-        let is_real_stack = self.op_stack.0.len() == self.real_stack_size;
+        let idx = self.op_stack.stack.0.len();
 
-        self.op_stack.pop_i64();
-
-        let idx = self.op_stack.0.len();
-
-        if !self.use_virt_stack {
-            assert!(is_real_stack);
-        }
-
-        if is_real_stack {
+        if is_real {
             // We are popping a value off of the real stack
             Self::pop_i64_into(reg, &mut self.body);
-            self.real_stack_size -= 1;
         } else {
             // This is just a register copy
             let stack_reg_lo = Register::Stack(idx as u32).as_lo();
@@ -1159,26 +1114,27 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_real_stack_resize(&mut self, target_size: usize) {
-        if self.real_stack_size < target_size {
+        if self.op_stack.real_size < target_size {
             self.emit_stack_save_to(target_size);
-        } else if self.real_stack_size > target_size {
+        } else if self.op_stack.real_size > target_size {
             todo!()
         }
     }
 
     pub fn emit_stack_save_to(&mut self, target_size: usize) {
-        assert!(self.real_stack_size <= target_size);
-        for idx in self.real_stack_size..target_size {
+        assert!(self.op_stack.real_size <= target_size);
+        for idx in self.op_stack.real_size..target_size {
             let reg = Register::Stack(idx as u32);
-            let ty = self.op_stack.0[idx];
+            let ty = self.op_stack.stack.0[idx];
 
             Self::lower_push_from(reg, ty, &mut self.body);
-            self.real_stack_size += 1;
         }
+
+        self.op_stack.real_size = target_size;
     }
 
     pub fn emit_stack_save(&mut self) {
-        self.emit_stack_save_to(self.op_stack.0.len());
+        self.emit_stack_save_to(self.op_stack.stack.0.len());
     }
 
     pub fn incr_stack_ptr_half(body: &mut Vec<String>) {
@@ -1520,7 +1476,7 @@ impl<'a> CodeEmitter<'a> {
                 self.emit_stack_save();
             } else if let Some(info) = self.state_info {
                 let state = &info.exit.iter().find(|(idx, _state)| *idx == entry.idx).unwrap().1;
-                assert_eq!(self.op_stack, state.op_stack);
+                assert_eq!(self.op_stack.stack, state.stack);
                 self.emit_real_stack_resize(state.real_size);
             }
         }
@@ -1543,8 +1499,7 @@ impl<'a> CodeEmitter<'a> {
     }
 
     fn branch(&mut self, target: &BranchTarget) {
-        let old_state = self.op_stack.clone();
-        let old_size = self.real_stack_size;
+        let old_stack = self.op_stack.clone();
 
         let entry = get_block(&target.label);
 
@@ -1562,8 +1517,7 @@ impl<'a> CodeEmitter<'a> {
 
         self.jump(&target.label);
 
-        self.op_stack = old_state;
-        self.real_stack_size = old_size;
+        self.op_stack = old_stack;
     }
 
 
@@ -1608,6 +1562,72 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealOpStack {
+    stack: OpStack,
+    /// The number of operands that are stored on the actual stack.
+    /// Always less than or equal to the size of the full stack.
+    real_size: usize,
+
+    /// If false, this will behave like a normal [`OpStack`]
+    use_virtual: bool,
+}
+
+impl RealOpStack {
+    pub fn new(use_virtual: bool) -> Self {
+        RealOpStack {
+            stack: OpStack::new(),
+            real_size: 0,
+            use_virtual,
+        }
+    }
+
+    pub fn reify_all(&mut self) {
+        self.real_size = self.stack.0.len();
+    }
+
+    pub fn push_ty(&mut self, ty: Type) {
+        if !self.use_virtual {
+            self.real_size += 1;
+        }
+
+        self.stack.push_ty(ty);
+    }
+
+    pub fn push_i32(&mut self) {
+        self.stack.push_i32();
+    }
+
+    pub fn push_i64(&mut self) {
+        self.stack.push_i64();
+    }
+
+    /// Returns true if the value was on the real stack
+    pub fn pop_value(&mut self) -> (Type, bool) {
+        let is_real = self.real_size == self.stack.0.len();
+
+        if is_real {
+            self.real_size -= 1;
+        }
+
+        (self.stack.pop_value(), is_real)
+    }
+
+    pub fn pop_ty(&mut self, ty: Type) -> bool {
+        let (t, real) = self.pop_value();
+        assert_eq!(t, ty);
+        real
+    }
+
+    pub fn pop_i32(&mut self) -> bool {
+        self.pop_ty(Type::I32)
+    }
+
+    pub fn pop_i64(&mut self) -> bool {
+        self.pop_ty(Type::I64)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1983,28 +2003,6 @@ struct FuncBodyStream {
     flow_stack: FlowStack,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StackState {
-    op_stack: OpStack,
-    real_size: usize,
-}
-
-impl StackState {
-    pub fn new() -> Self {
-        StackState {
-            op_stack: OpStack::new(),
-            real_size: 0,
-        }
-    }
-}
-
-fn calc_exit_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> StackState {
-    let mut state = entry_state;
-
-
-    state
-}
-
 fn get_first_term_instr(basic_block: &BasicBlock<Instr>) -> usize {
     // TODO: Internal branches
     basic_block.instrs.iter().enumerate().find_map(|(idx, instr)| {
@@ -2093,7 +2091,7 @@ fn get_next_blocks(basic_block: &BasicBlock<Instr>) -> Vec<usize> {
                 result
             }
             Instr::DynBranch(..) => {
-                return_addr.clone().into_iter().collect()
+                return_addr.into_iter().collect()
             }
             _ => todo!("{:?}", t)
         }
@@ -2106,7 +2104,7 @@ fn get_next_blocks(basic_block: &BasicBlock<Instr>) -> Vec<usize> {
     }).collect()
 }
 
-fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> Vec<(usize, StackState)> {
+fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack) -> Vec<(usize, RealOpStack)> {
     let body = get_body_instrs(basic_block);
     let term = get_term_instrs(basic_block);
 
@@ -2121,48 +2119,30 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
                 assert!(return_addr.is_none());
                 return_addr = Some(l);
             }
-            Instr::Drop => {
-                if state.real_size == state.op_stack.0.len() {
-                    state.real_size -= 1;
-                }
-
-                state.op_stack.pop_value();
-            }
-            Instr::PushI32Const(_) => state.op_stack.push_i32(),
-            Instr::PushI64Const(_) => state.op_stack.push_i64(),
-            Instr::PushI32From(..) => state.op_stack.push_i32(),
-            Instr::PushI64From(..) => state.op_stack.push_i64(),
-            Instr::PopI32Into(..) => {
-                if state.real_size == state.op_stack.0.len() {
-                    state.real_size -= 1;
-                }
-
-                state.op_stack.pop_i32();
-            },
-            Instr::PopI64Into(..) => {
-                if state.real_size == state.op_stack.0.len() {
-                    state.real_size -= 1;
-                }
-
-                state.op_stack.pop_i64();
-            },
+            Instr::Drop => { state.pop_value(); },
+            Instr::PushI32Const(_) => state.push_i32(),
+            Instr::PushI64Const(_) => state.push_i64(),
+            Instr::PushI32From(..) => state.push_i32(),
+            Instr::PushI64From(..) => state.push_i64(),
+            Instr::PopI32Into(..) => { state.pop_i32(); },
+            Instr::PopI64Into(..) => { state.pop_i64(); },
             Instr::Branch(t) => {
                 for ty in t.ty.iter() {
-                    state.op_stack.pop_ty(*ty);                   
+                    state.pop_ty(*ty);                   
                 }
 
                 for _ in 0..t.to_pop {
-                    state.op_stack.pop_value();
+                    state.pop_value();
                 }
 
                 if t.label.func_idx != basic_block.label.func_idx {
-                    state.real_size = state.op_stack.0.len();
+                    state.reify_all();
                 }
             },
             Instr::BranchIf { .. } => todo!(),
             Instr::BranchTable { .. } => todo!(),
             Instr::DynBranch(..) => {
-                state.real_size = state.op_stack.0.len();
+                state.reify_all();
             }, 
             _ => {}
         }
@@ -2203,19 +2183,19 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
         let mut state = state.clone();
 
         for ty in t.ty.iter().rev() {
-            state.op_stack.pop_ty(*ty);                   
+            state.pop_ty(*ty);                   
         }
 
         for _ in 0..t.to_pop {
-            state.op_stack.pop_value();
+            state.pop_value();
         }
 
-        if state.real_size > state.op_stack.0.len() || t.label.func_idx != basic_block.label.func_idx {
-            state.real_size = state.op_stack.0.len();
+        if t.label.func_idx != basic_block.label.func_idx {
+            state.reify_all();
         }
 
         for ty in t.ty.iter() {
-            state.op_stack.push_ty(*ty);
+            state.push_ty(*ty);
         }
 
         if t.label.func_idx != basic_block.label.func_idx {
@@ -2238,12 +2218,12 @@ fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: StackState) -> V
 
 #[derive(Debug, PartialEq, Eq)]
 struct StateInfo {
-    entry: StackState,
-    exit: Vec<(usize, StackState)>,
+    entry: RealOpStack,
+    exit: Vec<(usize, RealOpStack)>,
 }
 
 impl StateInfo {
-    fn new(basic_block: &BasicBlock<Instr>, entry: StackState) -> Self {
+    fn new(basic_block: &BasicBlock<Instr>, entry: RealOpStack) -> Self {
         let exit = get_next_state(basic_block, entry.clone());
         StateInfo { entry, exit }
     }
@@ -2252,9 +2232,10 @@ impl StateInfo {
 fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     let mut states = BTreeMap::new();
 
-    let entry_state = StackState {
-        op_stack: OpStack(vec![Type::I32]),
+    let entry_state = RealOpStack {
+        stack: OpStack(vec![Type::I32]),
         real_size: 1,
+        use_virtual: true,
     };
 
     let start_state = StateInfo::new(&basic_blocks[0], entry_state);
