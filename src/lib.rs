@@ -100,7 +100,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Direct;
+const BRANCH_CONV: BranchConv = BranchConv::Chain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -4514,10 +4514,6 @@ fn prepare_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
 
     let mut state = State::new(basic_blocks.to_owned(), &file.globals, &file.memory, tables);
 
-    for (i, global) in file.globals.globals.iter().enumerate() {
-        state.globals[i].0 = eval_init_expr(global.init_expr);
-    }
-
     for d in file.data.data.iter() {
         match d.kind {
             DataKind::Active { memory_index, init_expr } => {
@@ -4973,8 +4969,6 @@ fn get_intrinsic_counts() -> HashMap<&'static str, usize> {
     result.insert("ashr_i64", count_intrinsic("ashr_i64", &[("%param0%0", -1), ("%param0%1", 1), ("%param1%0", 63)]));
     result.insert("clz", count_intrinsic("clz", &[("%param0%0", 0)]));
     result.insert("ctz", count_intrinsic("ctz", &[("%param0%0", 0)]));
-
-    // TODO: i64_sdiv, i64_srem, i64_udiv, i64_urem
 
     result.insert("i64_sdiv", count_intrinsic("i64_sdiv", &[("%param%0%lo", -1), ("%param%0%hi", -1), ("%param%1%lo", -1), ("%param%1%hi", -1)]));
     result.insert("i64_srem", count_intrinsic("i64_srem", &[("%param%0%lo", -1), ("%param%0%hi", -1), ("%param%1%lo", -1), ("%param%1%hi", -1)]));

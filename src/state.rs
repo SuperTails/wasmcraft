@@ -1,16 +1,16 @@
-use crate::{Axis, BasicBlock, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue};
+use crate::{Axis, BasicBlock, BranchTarget, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue, eval_init_expr};
 use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
 use wasmparser::Type;
 use std::convert::TryFrom;
 
-struct Frame {
-    data: Vec<(i32, i32)>,
+struct Frame<T> {
+    data: Vec<(T, T)>,
 }
 
-impl Frame {
+impl<T: Default + Clone> Frame<T> {
 	pub fn new(local_count: u32) -> Self {
-		Frame { data: vec![(0, 0); local_count as usize] }
+		Frame { data: vec![(T::default(), T::default()); local_count as usize] }
 	}
 }
 
@@ -24,36 +24,52 @@ pub(crate) struct Table {
     pub elements: Vec<Option<CodeFuncIdx>>,
 }
 
-pub(crate) struct RegFile(pub HashMap<HalfRegister, i32>);
+pub(crate) struct RegFile<T>(pub HashMap<HalfRegister, T>);
 
-impl RegFile {
+impl<T: Copy> RegFile<T> {
     pub fn new() -> Self {
         RegFile(HashMap::new())
     }
 
-    pub fn get_half(&self, reg: HalfRegister) -> i32 {
+    pub fn get_half(&self, reg: HalfRegister) -> T {
         *self.0.get(&reg).unwrap()
     }
 
-    pub fn get_i32(&self, reg: Register) -> i32 {
-        self.get_half(reg.as_lo())
-    }
-
-    pub fn get_pair(&self, reg: Register) -> (i32, i32) {
+    pub fn get_pair(&self, reg: Register) -> (T, T) {
         let lo = self.get_half(reg.as_lo());
         let hi = self.get_half(reg.as_hi());
 
         (lo, hi)
     }
 
+    pub fn set_half(&mut self, reg: HalfRegister, value: T) {
+        self.0.insert(reg, value);
+    }
+
+    pub fn set_pair(&mut self, reg: Register, value: (T, T)) {
+        self.set_half(reg.as_lo(), value.0);
+        self.set_half(reg.as_hi(), value.1);
+    }
+
+    pub fn clobber_half(&mut self, reg: HalfRegister) {
+        self.0.remove(&reg);
+    }
+
+    pub fn clobber_pair(&mut self, reg: Register) {
+        self.clobber_half(reg.as_lo());
+        self.clobber_half(reg.as_hi());
+    }
+}
+
+impl RegFile<i32> {
+    pub fn get_i32(&self, reg: Register) -> i32 {
+        self.get_half(reg.as_lo())
+    }
+
     pub fn get_i64(&self, reg: Register) -> i64 {
         let (lo, hi) = self.get_pair(reg);
 
-        let val = (lo as u32 as u64 as i64) | ((hi as i64) << 32);
-
-        println!("lo: {:#X} hi: {:#X} val: {:#X}", lo, hi, val);
-
-        val
+        (lo as u32 as i64) | ((hi as i64) << 32)
     }
 
     pub fn get_typed(&self, reg: Register, ty: Type) -> WasmValue {
@@ -64,32 +80,14 @@ impl RegFile {
         }
     }
 
-    pub fn set_half(&mut self, reg: HalfRegister, value: i32) {
-        self.0.insert(reg, value);
-    }
-
     pub fn set_i32(&mut self, reg: Register, value: i32) {
         self.set_half(reg.as_lo(), value)
-    }
-
-    pub fn set_pair(&mut self, reg: Register, value: (i32, i32)) {
-        self.set_half(reg.as_lo(), value.0);
-        self.set_half(reg.as_hi(), value.1);
     }
 
     pub fn set_i64(&mut self, reg: Register, value: i64) {
         let lo = value as i32;
         let hi = (value >> 32) as i32;
         self.set_pair(reg, (lo, hi));
-    }
-
-    pub fn clobber_half(&mut self, reg: HalfRegister) {
-        self.0.remove(&reg);
-    }
-
-    pub fn clobber_pair(&mut self, reg: Register) {
-        self.clobber_half(reg.as_lo());
-        self.clobber_half(reg.as_hi());
     }
 }
 
@@ -126,22 +124,121 @@ impl Pc {
     }
 }
 
+#[derive(Debug)]
+struct Stack(Vec<Value>);
+
+impl Stack {
+    pub fn new() -> Self {
+        Stack(Vec::new())
+    }
+
+    pub fn pop_i32(&mut self) -> i32 {
+        let a = self.pop_value();
+        match a {
+            Value::I32(v) => v,
+            Value::I64(_, _) => panic!(),
+        }
+    }
+
+    pub fn pop_i64_pair(&mut self) -> (i32, i32) {
+        let a = self.pop_value();
+        match a {
+            Value::I64(lo, hi) => (lo, hi),
+            Value::I32(_) => panic!(),
+        }
+    }
+
+    pub fn pop_i64(&mut self) -> i64 {
+        let (lo, hi) = self.pop_i64_pair();
+        ((hi as i64) << 32) | (lo as u32 as i64)
+    }
+
+    pub fn pop_ty(&mut self, ty: Type) -> (i32, i32) {
+        let a = self.pop_value();
+        match (a, ty) {
+            (Value::I64(a, b), Type::I64) => (a, b),
+            (Value::I32(a), Type::I32) => (a, 0),
+            _ => panic!(),
+        }
+    }
+
+    pub fn pop_value(&mut self) -> Value {
+        self.0.pop().unwrap()
+    }
+
+    pub fn push_ty(&mut self, ty: Type, value: (i32, i32)) {
+        match ty {
+            Type::I32 => self.0.push(Value::I32(value.0)),
+            Type::I64 => self.0.push(Value::I64(value.0, value.1)),
+            _ => todo!(),
+        }
+    }
+
+    pub fn push_i64(&mut self, value: i64) {
+        let lo = value as i32;
+        let hi = (value >> 32) as i32;
+        self.push_i64_pair(lo, hi);
+    }
+
+    pub fn push_i64_pair(&mut self, lo: i32, hi: i32) {
+        self.push_value(Value::I64(lo, hi))
+    }
+
+    pub fn push_i32(&mut self, value: i32) {
+        self.push_value(Value::I32(value))
+    }
+
+    pub fn push_value(&mut self, value: Value) {
+        self.0.push(value);
+    }
+}
+
+struct GlobalData(Vec<(i32, i32)>);
+
+impl GlobalData {
+    pub fn new(global_list: &GlobalList) -> Self {
+        let mut data = GlobalData(vec![(0, 0); global_list.globals.len()]);
+
+        for (i, global) in global_list.globals.iter().enumerate() {
+            data.set_lo(i, eval_init_expr(global.init_expr));
+        }
+
+        data
+    }
+
+    pub fn get_pair(&self, index: usize) -> (i32, i32) {
+        self.0[index]
+    }
+
+    pub fn get_lo(&self, index: usize) -> i32 {
+        self.get_pair(index).0
+    }
+
+    pub fn set_pair(&mut self, index: usize, value: (i32, i32)) {
+        self.0[index] = value;
+    }
+
+    pub fn set_lo(&mut self, index: usize, value: i32) {
+        self.0[index].0 = value;
+    }
+}
+
 pub(crate) struct State {
 	pub pc: Pc,
 
 	pub bbs: Vec<BasicBlock<Instr>>,
 
-	frames: Vec<Frame>,
+	frames: Vec<Frame<i32>>,
 
-	stack: Vec<Value>,
+	stack: Stack,
 
     tables: Vec<Table>,
 
     pub memory: Vec<[u8; 65536]>,
 
-    pub registers: RegFile,
+    pub registers: RegFile<i32>,
 
-    pub globals: Vec<(i32, i32)>,
+    globals: GlobalData,
 
     global_ptr: u32,
 
@@ -172,12 +269,12 @@ impl State {
 			bbs,
 			pc: Pc(vec![(0, 0)]),
 			frames: Vec::new(),
-			stack: Vec::new(),
+			stack: Stack::new(),
             registers: RegFile::new(),
+            globals: GlobalData::new(globals),
             local_ptr: 0,
             global_ptr: 0,
             memory_ptr: 0,
-            globals: vec![(0, 0); globals.globals.len()],
             memory,
             turtle: (0, 0, 0),
             tables,
@@ -185,7 +282,7 @@ impl State {
 	}
 
     pub fn enter(&mut self, idx: usize) {
-        self.stack.push(Value::I32(-1));
+        self.stack.push_i32(-1);
 
 		self.pc = Pc(vec![(idx, 0)]);
     }
@@ -201,7 +298,37 @@ impl State {
 
     pub fn is_halted(&self) -> bool {
         self.pc.0.is_empty()
-        //self.pc.1 == self.bbs[self.pc.0].instrs.len()
+    }
+
+    fn take_branch(target: &BranchTarget, stack: &mut Stack, registers: &mut RegFile<i32>, pc: &mut Pc, bbs: &[BasicBlock<Instr>]) {
+        let mut params = Vec::new();
+        for ty in target.ty.iter().rev() {
+            params.push(stack.pop_ty(*ty));
+        }
+        params.reverse();
+
+        // FIXME:
+        for ((idx, ty), v) in target.ty.iter().enumerate().zip(params.iter()) {
+            match ty {
+                Type::I32 => {
+                    registers.set_i32(Register::Return(idx as u32), v.0);
+                }
+                Type::I64 => {
+                    registers.set_pair(Register::Return(idx as u32), *v);
+                }
+                _ => todo!(),
+            }
+        }
+
+        for _ in 0..target.to_pop {
+            stack.pop_value();
+        }
+
+        pc.jump(&target.label, bbs);
+
+        for (param, ty) in params.into_iter().zip(target.ty.iter()) {
+            stack.push_ty(*ty, param);
+        }
     }
 
 	/// Returns true when it ends
@@ -229,16 +356,13 @@ impl State {
 			PushReturnAddress(r) => {
                 let idx = Self::get_pc(&self.bbs, r);
 
-				self.stack.push(Value::I32(idx as i32));
+				self.stack.push_i32(idx as i32);
 			}
             PushI64Const(c) => {
-                let lo = *c as i32;
-                let hi = (*c >> 32) as i32;
-
-                self.stack.push(Value::I64(lo, hi));
+                self.stack.push_i64(*c);
             }
             PushI32Const(c) => {
-                self.stack.push(Value::I32(*c));
+                self.stack.push_i32(*c);
             }
 
             &Copy { dst, src } => {
@@ -424,46 +548,43 @@ impl State {
                 self.global_ptr = *v;
             }
             &LoadGlobalI64(r) => {
-                let v = self.globals[self.global_ptr as usize];
+                let v = self.globals.get_pair(self.global_ptr as usize);
                 self.registers.set_pair(r, v);
             }
             &StoreGlobalI64(r) => {
                 let v = self.registers.get_pair(r);
-                self.globals[self.global_ptr as usize] = v;
+                self.globals.set_pair(self.global_ptr as usize, v);
             }
             &LoadGlobalI32(r) => {
-                let v = self.globals[self.global_ptr as usize].0;
+                let v = self.globals.get_lo(self.global_ptr as usize);
                 self.registers.set_i32(r, v);
             }
             &StoreGlobalI32(r) => {
                 let v = self.registers.get_i32(r);
-                self.globals[self.global_ptr as usize].0 = v;
+                self.globals.set_lo(self.global_ptr as usize, v);
             }
 
             &PushI32From(r) => {
                 let v = self.registers.get_i32(r);
-                self.stack.push(Value::I32(v));
+                self.stack.push_i32(v);
             }
             &PushI64From(r) => {
-                let v = self.registers.get_pair(r);
-                println!("Pushing {:?}", v);
-                self.stack.push(Value::I64(v.0, v.1));
+                let v = self.registers.get_i64(r);
+                self.stack.push_i64(v);
             }
             &PopI32Into(r) => {
-                let v = pop_i32_into(&mut self.stack);
+                let v = self.stack.pop_i32();
 
                 self.registers.set_i32(r, v);
             }
             &PopI64Into(r) => {
-                let v = pop_i64_into(&mut self.stack);
+                let v = self.stack.pop_i64();
 
-                println!("Popping {:?}", v);
-
-                self.registers.set_pair(r, v);
+                self.registers.set_i64(r, v);
             }
 
             Drop => {
-                let _ = pop_any_into(&mut self.stack);
+                let _ = self.stack.pop_value();
             }
             &SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
                 let c = self.registers.get_i32(cond_reg);
@@ -496,36 +617,8 @@ impl State {
             }
 
             Branch(target) => {
-                let mut params = Vec::new();
-                for ty in target.ty.iter().rev() {
-                    params.push(pop_ty_into(&mut self.stack, *ty));
-                }
-                params.reverse();
-
-                // FIXME:
-                for ((idx, ty), v) in target.ty.iter().enumerate().zip(params.iter()) {
-                    match ty {
-                        Type::I32 => {
-                            self.registers.set_i32(Register::Return(idx as u32), v.0);
-                        }
-                        Type::I64 => {
-                            self.registers.set_pair(Register::Return(idx as u32), *v);
-                        }
-                        _ => todo!(),
-                    }
-                }
-
-                for _ in 0..target.to_pop {
-                    pop_any_into(&mut self.stack);
-                }
-
-                self.pc.jump(&target.label, &self.bbs);
+                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
                 incr_pc = false;
-
-                for (param, ty) in params.into_iter().zip(target.ty.iter()) {
-                    push_ty_from(&mut self.stack, *ty, param);
-                }
-
             }
             BranchIf { t_name, f_name, cond } => {
                 let c = self.registers.get_i32(*cond);
@@ -535,38 +628,8 @@ impl State {
                     f_name
                 };
 
-                let mut params = Vec::new();
-                for ty in target.ty.iter().rev() {
-                    params.push(pop_ty_into(&mut self.stack, *ty));
-                }
-                params.reverse();
-
-                // FIXME:
-                for ((idx, ty), v) in target.ty.iter().enumerate().zip(params.iter()) {
-                    match ty {
-                        Type::I32 => {
-                            self.registers.set_i32(Register::Return(idx as u32), v.0);
-                        }
-                        Type::I64 => {
-                            self.registers.set_pair(Register::Return(idx as u32), *v);
-                        }
-                        _ => todo!(),
-                    }
-
-                }
-
-                for _ in 0..target.to_pop {
-                    pop_any_into(&mut self.stack);
-                }
-
-                println!("Branched to {:?}", target.label);
-
-                self.pc.jump(&target.label, &self.bbs);
+                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
                 incr_pc = false;
-
-                for (param, ty) in params.into_iter().zip(target.ty.iter()) {
-                    push_ty_from(&mut self.stack, *ty, param);
-                }
             }
             BranchTable { reg, targets, default } => {
                 let dest = self.registers.get_i32(*reg);
@@ -585,37 +648,8 @@ impl State {
                     panic!("Branch out of bounds and no default target: {}", dest);
                 };
 
-
-                let mut params = Vec::new();
-                for ty in target.ty.iter().rev() {
-                    params.push(pop_ty_into(&mut self.stack, *ty));
-                }
-                params.reverse();
-
-                // FIXME:
-                for ((idx, ty), v) in target.ty.iter().enumerate().zip(params.iter()) {
-                    match ty {
-                        Type::I32 => {
-                            self.registers.set_i32(Register::Return(idx as u32), v.0);
-                        }
-                        Type::I64 => {
-                            self.registers.set_pair(Register::Return(idx as u32), *v);
-                        }
-                        _ => todo!(),
-                    }
-
-                }
-
-                for _ in 0..target.to_pop {
-                    pop_any_into(&mut self.stack);
-                }
-
-                self.pc.jump(&target.label, &self.bbs);
+                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
                 incr_pc = false;
-
-                for (param, ty) in params.into_iter().zip(target.ty.iter()) {
-                    push_ty_from(&mut self.stack, *ty, param);
-                }
             }
 
             &I32Ctz(reg) => {
@@ -814,14 +848,12 @@ impl State {
                 incr_pc = false;
 
                 println!("Branched to {} {:?}", dest_idx, last_pc);
-
             }
 
             Unreachable => {
                 println!("UNREACHABLE AAAAAA");
                 return true;
             }
-
 			Comment(_) => {},
             Tellraw(t) => {
                 // TODO:
@@ -837,45 +869,4 @@ impl State {
 
         self.is_halted()
 	}
-}
-
-fn pop_i32_into(stack: &mut Vec<Value>) -> i32 {
-    let a = stack.pop().unwrap();
-    match a {
-        Value::I32(v) => v,
-        Value::I64(_, _) => panic!(),
-    }
-}
-
-fn pop_i64_into(stack: &mut Vec<Value>) -> (i32, i32) {
-    let a = stack.pop().unwrap();
-    match a {
-        Value::I64(lo, hi) => (lo, hi),
-        Value::I32(_) => panic!(),
-    }
-}
-
-fn pop_ty_into(stack: &mut Vec<Value>, ty: Type) -> (i32, i32) {
-    let a = stack.pop().unwrap();
-    match (a, ty) {
-        (Value::I64(a, b), Type::I64) => (a, b),
-        (Value::I32(a), Type::I32) => (a, 0),
-        _ => panic!(),
-    }
-}
-
-fn pop_any_into(stack: &mut Vec<Value>) -> (i32, i32) {
-    let a = stack.pop().unwrap();
-    match a {
-        Value::I64(a, b) => (a, b),
-        Value::I32(a) => (a, 0),
-    }
-}
-
-fn push_ty_from(stack: &mut Vec<Value>, ty: Type, value: (i32, i32)) {
-    match ty {
-        Type::I32 => stack.push(Value::I32(value.0)),
-        Type::I64 => stack.push(Value::I64(value.0, value.1)),
-        _ => todo!(),
-    }
 }
