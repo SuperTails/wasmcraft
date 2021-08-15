@@ -100,7 +100,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Chain;
+const BRANCH_CONV: BranchConv = BranchConv::Direct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -1981,9 +1981,11 @@ impl FlowStack {
         let outputs = get_output_tys(ty, types);
         let target_tys = outputs.clone();
 
+        let stack_size = if BRANCH_CONV == BranchConv::Direct { 0 } else { 1 };
+
         FlowStack(vec![ControlFlowEntry {
             label: Some(exit_label),
-            stack_size: 1,
+            stack_size,
             target_tys,
             else_block: None,
             outputs,
@@ -2232,10 +2234,18 @@ impl StateInfo {
 fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     let mut states = BTreeMap::new();
 
-    let entry_state = RealOpStack {
-        stack: OpStack(vec![Type::I32]),
-        real_size: 1,
-        use_virtual: true,
+    let entry_state = if BRANCH_CONV == BranchConv::Direct {
+        RealOpStack {
+            stack: OpStack(Vec::new()),
+            real_size: 0,
+            use_virtual: true,
+        }
+    } else {
+        RealOpStack {
+            stack: OpStack(vec![Type::I32]),
+            real_size: 1,
+            use_virtual: true,
+        }
     };
 
     let start_state = StateInfo::new(&basic_blocks[0], entry_state);
@@ -2272,9 +2282,11 @@ fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
 
 impl FuncBodyStream {
     pub fn new(func_ty: TypeOrFuncType, types: &TypeList, func_idx: CodeFuncIdx) -> Self {
-        let entry_block = BasicBlock::new(func_idx, 0, OpStack(vec![Type::I32]));
+        let op_stack = if BRANCH_CONV == BranchConv::Direct { OpStack(Vec::new()) } else { OpStack(vec![Type::I32]) };
+        
+        let entry_block = BasicBlock::new(func_idx, 0, op_stack.clone());
 
-        let mut exit_tys = vec![Type::I32];
+        let mut exit_tys = if BRANCH_CONV == BranchConv::Direct { Vec::new() } else { vec![Type::I32] };
         exit_tys.extend(Vec::from(get_output_tys(func_ty, types)));
 
         let exit_block = BasicBlock::new(func_idx, 1, OpStack(exit_tys));
@@ -2286,7 +2298,7 @@ impl FuncBodyStream {
             reachable: vec![true, true],
             bb_index: 0,
             depth: 0,
-            op_stack: OpStack(vec![Type::I32]),
+            op_stack,
             flow_stack: FlowStack::new(func_ty, types, Label::new(func_idx, 1)),
         }
     }
