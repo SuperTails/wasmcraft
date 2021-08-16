@@ -4012,7 +4012,9 @@ pub fn run(run_options: &RunOptions) {
     let mut wasm_file = parse_wasm_file(&file);
     link_intrinsics(&mut wasm_file);
 
-    let basic_blocks = compile(&wasm_file);
+    let mut basic_blocks = compile(&wasm_file);
+
+    optimize_mir(&mut basic_blocks);
 
     let mc_functions = assemble(&basic_blocks, &wasm_file, VERIFY_OUTPUT);
 
@@ -4604,6 +4606,20 @@ fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     stack_states
 }
 
+fn optimize_mir(basic_blocks: &mut [BasicBlock<Instr>]) {
+    let stack_states = get_stack_states(basic_blocks);
+
+    for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {
+        let actions = state::get_actions(bb, &state.entry.stack);
+
+        println!("{:?} {:?}", bb.label, actions);
+
+        state::apply_actions(bb, actions);
+    }
+
+    panic!();
+}
+
 fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
@@ -5087,7 +5103,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
                     compare_states(&mir, &cmd);
 
                     println!();
-                    mir.step();
+                    mir.step().unwrap();
                 }
 
                 cmd.finish_unwind(top_func);
@@ -5263,7 +5279,9 @@ mod test {
         let mut wasm_file = parse_wasm_file(&file);
         link_intrinsics(&mut wasm_file);
 
-        let basic_blocks = compile(&wasm_file);
+        let mut basic_blocks = compile(&wasm_file);
+
+        optimize_mir(&mut basic_blocks);
 
         let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 
@@ -5652,7 +5670,9 @@ mod test {
         let mut wasm_file = parse_wasm_file(data);
         link_intrinsics(&mut wasm_file);
 
-        let basic_blocks = compile(&wasm_file);
+        let mut basic_blocks = compile(&wasm_file);
+
+        optimize_mir(&mut basic_blocks);
 
         let mc_functions = assemble(&basic_blocks, &wasm_file, true);
 

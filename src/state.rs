@@ -5,7 +5,7 @@ use wasmparser::Type;
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StateError {
+pub(crate) enum StateError {
     UninitRead(HalfRegister),
 }
 
@@ -22,9 +22,9 @@ impl<T: Default + Clone> Frame<T> {
 }
 
 #[derive(Debug)]
-enum Value {
-	I32(i32),
-    I64(i32, i32),
+enum Value<V> {
+	I32(V),
+    I64(V, V),
 }
 
 pub(crate) struct Table {
@@ -132,14 +132,14 @@ impl Pc {
 }
 
 #[derive(Debug)]
-struct Stack(Vec<Value>);
+struct Stack<T>(Vec<Value<T>>);
 
-impl Stack {
+impl<T: Default> Stack<T> {
     pub fn new() -> Self {
         Stack(Vec::new())
     }
 
-    pub fn pop_i32(&mut self) -> i32 {
+    pub fn pop_i32(&mut self) -> T {
         let a = self.pop_value();
         match a {
             Value::I32(v) => v,
@@ -147,7 +147,7 @@ impl Stack {
         }
     }
 
-    pub fn pop_i64_pair(&mut self) -> (i32, i32) {
+    pub fn pop_i64_pair(&mut self) -> (T, T) {
         let a = self.pop_value();
         match a {
             Value::I64(lo, hi) => (lo, hi),
@@ -155,25 +155,20 @@ impl Stack {
         }
     }
 
-    pub fn pop_i64(&mut self) -> i64 {
-        let (lo, hi) = self.pop_i64_pair();
-        ((hi as i64) << 32) | (lo as u32 as i64)
-    }
-
-    pub fn pop_ty(&mut self, ty: Type) -> (i32, i32) {
+    pub fn pop_ty(&mut self, ty: Type) -> (T, T) {
         let a = self.pop_value();
         match (a, ty) {
             (Value::I64(a, b), Type::I64) => (a, b),
-            (Value::I32(a), Type::I32) => (a, 0),
+            (Value::I32(a), Type::I32) => (a, T::default()),
             _ => panic!(),
         }
     }
 
-    pub fn pop_value(&mut self) -> Value {
+    pub fn pop_value(&mut self) -> Value<T> {
         self.0.pop().unwrap()
     }
 
-    pub fn push_ty(&mut self, ty: Type, value: (i32, i32)) {
+    pub fn push_ty(&mut self, ty: Type, value: (T, T)) {
         match ty {
             Type::I32 => self.0.push(Value::I32(value.0)),
             Type::I64 => self.0.push(Value::I64(value.0, value.1)),
@@ -181,22 +176,29 @@ impl Stack {
         }
     }
 
+    pub fn push_i64_pair(&mut self, lo: T, hi: T) {
+        self.push_value(Value::I64(lo, hi))
+    }
+
+    pub fn push_i32(&mut self, value: T) {
+        self.push_value(Value::I32(value))
+    }
+
+    pub fn push_value(&mut self, value: Value<T>) {
+        self.0.push(value);
+    }
+}
+
+impl Stack<i32> {
+    pub fn pop_i64(&mut self) -> i64 {
+        let (lo, hi) = self.pop_i64_pair();
+        ((hi as i64) << 32) | (lo as u32 as i64)
+    }
+
     pub fn push_i64(&mut self, value: i64) {
         let lo = value as i32;
         let hi = (value >> 32) as i32;
         self.push_i64_pair(lo, hi);
-    }
-
-    pub fn push_i64_pair(&mut self, lo: i32, hi: i32) {
-        self.push_value(Value::I64(lo, hi))
-    }
-
-    pub fn push_i32(&mut self, value: i32) {
-        self.push_value(Value::I32(value))
-    }
-
-    pub fn push_value(&mut self, value: Value) {
-        self.0.push(value);
     }
 }
 
@@ -237,7 +239,7 @@ pub(crate) struct State {
 
 	frames: Vec<Frame<i32>>,
 
-	stack: Stack,
+	stack: Stack<i32>,
 
     tables: Vec<Table>,
 
@@ -307,7 +309,7 @@ impl State {
         self.pc.0.is_empty()
     }
 
-    fn take_branch(target: &BranchTarget, stack: &mut Stack, registers: &mut RegFile<i32>, pc: &mut Pc, bbs: &[BasicBlock<Instr>]) {
+    fn take_branch(target: &BranchTarget, stack: &mut Stack<i32>, registers: &mut RegFile<i32>, pc: &mut Pc, bbs: &[BasicBlock<Instr>]) {
         let mut params = Vec::new();
         for ty in target.ty.iter().rev() {
             params.push(stack.pop_ty(*ty));
@@ -764,41 +766,7 @@ impl State {
                 let l = self.registers.get_half(lhs)?;
                 let r = self.registers.get_half(rhs)?;
 
-                let d = match op {
-                    "+=" => l.wrapping_add(r),
-                    "-=" => l.wrapping_sub(r),
-                    "*=" => l.wrapping_mul(r),
-                    "/=" => {
-                        self.registers.clobber_half(lhs);
-                        self.registers.clobber_half(rhs);
-                        l.wrapping_div(r)
-                    },
-                    "/=u" => ((l as u32) / (r as u32)) as i32,
-                    "remu" => ((l as u32) % (r as u32)) as i32,
-                    "rems" => l.wrapping_rem(r),
-                    "&=" => l & r,
-                    "|=" => l | r,
-                    "^=" => l ^ r,
-                    "shl" => l.wrapping_shl(r as u32),
-                    "shru" => ((l as u32).wrapping_shr(r as u32)) as i32,
-                    "shrs" => {
-                        self.registers.clobber_half(rhs);
-                        l.wrapping_shr(r as u32)
-                    },
-                    "rotl" => l.rotate_left((r as u32) % 32),
-                    "rotr" => l.rotate_right((r as u32) % 32),
-                    "==" => (l == r) as i32,
-                    "!=" => (l != r) as i32,
-                    "lts" => (l <  r) as i32,
-                    "les" => (l <= r) as i32,
-                    "gts" => (l >  r) as i32,
-                    "ges" => (l >= r) as i32,
-                    "leu" => ((l as u32) <= (r as u32)) as i32,
-                    "ltu" => ((l as u32) <  (r as u32)) as i32,
-                    "geu" => ((l as u32) >= (r as u32)) as i32,
-                    "gtu" => ((l as u32) >  (r as u32)) as i32,
-                    o => todo!("{:?}", o),
-                };
+                let d = eval_i32_op(lhs, rhs, l, op, r, &mut self.registers);
 
                 println!("{} {} {}", l, r, d);
 
@@ -876,4 +844,416 @@ impl State {
 
         Ok(self.is_halted())
 	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropWord {
+    Unknown,
+    Exact(i32),
+}
+
+impl PropWord {
+    pub fn map<F>(self, f: F) -> Self
+        where F: FnOnce(i32) -> i32,
+    {
+        match self {
+            PropWord::Unknown => PropWord::Unknown,
+            PropWord::Exact(v) => PropWord::Exact(f(v)),
+        }
+    }
+}
+
+impl Default for PropWord {
+    fn default() -> Self {
+        PropWord::Unknown
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum OptAction {
+    Replace {
+        idx: usize,
+        instr: Instr,
+    }
+}
+
+pub(crate) struct ConstProp<'a> {
+    block: &'a BasicBlock<Instr>,
+
+    globals: Vec<(PropWord, PropWord)>,
+
+    registers: RegFile<PropWord>,
+    stack: Stack<PropWord>,
+
+    global_ptr: PropWord,
+
+    local_ptr: PropWord,
+    locals: Vec<(PropWord, PropWord)>,
+
+    actions: Vec<OptAction>,
+
+    pc: usize,
+}
+
+fn read(v: StateResult<PropWord>) -> StateResult<PropWord> {
+    if let Err(StateError::UninitRead(_)) = v {
+        Ok(PropWord::Unknown)
+    } else {
+        v
+    }
+}
+
+pub(crate) fn get_actions(basic_block: &BasicBlock<Instr>, op_stack: &crate::OpStack) -> Vec<OptAction> {
+    let mut prop = ConstProp::new(basic_block, op_stack);
+    println!("Starting...");
+    prop.run();
+    prop.actions
+}
+
+pub(crate) fn apply_actions(basic_block: &mut BasicBlock<Instr>, actions: Vec<OptAction>) {
+    for action in actions {
+        match action {
+            OptAction::Replace { idx, instr } => {
+                basic_block.instrs[idx] = instr;
+            }
+        }
+    }
+}
+
+impl<'a> ConstProp<'a> {
+    pub fn new(block: &'a BasicBlock<Instr>, op_stack: &crate::OpStack) -> Self {
+        let mut stack = Stack::new();
+        for t in op_stack.0.iter() {
+            match t {
+                Type::I32 => stack.push_i32(PropWord::Unknown),
+                Type::I64 => stack.push_i64_pair(PropWord::Unknown, PropWord::Unknown),
+                _ => todo!("{:?}", t)
+            }
+        }
+
+        ConstProp {
+            block,
+            registers: RegFile::new(),
+            stack,
+            global_ptr: PropWord::Unknown,
+            globals: Vec::new(),
+            local_ptr: PropWord::Unknown,
+            locals: Vec::new(),
+            actions: Vec::new(),
+            pc: 0,
+        }
+    }
+
+    pub fn run(&mut self) {
+        while !self.step().unwrap() {}
+
+        println!("ran {} things", self.pc);
+    }
+
+    // Returns true when halted
+    pub fn step(&mut self) -> StateResult<bool> {
+        let instr = &self.block.instrs[self.pc];
+
+        match instr {
+            Instr::Comment(_) => {},
+            Instr::Tellraw(_) => {},
+            Instr::SetTurtleCoord(_, _) => {},
+            Instr::SetTurtleBlock(_) => {},
+
+            Instr::TurtleGet(reg) => {
+                self.registers.set_half(reg.as_lo(), PropWord::Unknown);
+            }
+
+            Instr::Drop => { self.stack.pop_value(); },
+
+            Instr::PopI32Into(reg) => {
+                let val = self.stack.pop_i32();
+                self.registers.set_half(reg.as_lo(), val);
+            },
+            Instr::PopI64Into(reg) => {
+                let val = self.stack.pop_i64_pair();
+                self.registers.set_pair(*reg, val);
+            }
+
+            Instr::PushI32From(reg) => {
+                let val = read(self.registers.get_half(reg.as_lo()))?;
+                self.stack.push_i32(val);
+            },
+            Instr::PushI64From(reg) => {
+                let lo = read(self.registers.get_half(reg.as_lo()))?;
+                let hi = read(self.registers.get_half(reg.as_hi()))?;
+                self.stack.push_i64_pair(lo, hi);
+            },
+            Instr::PushI32Const(value) => {
+                self.stack.push_i32(PropWord::Exact(*value));
+            },
+            Instr::PushI64Const(value) => {
+                let lo = PropWord::Exact(*value as i32);
+                let hi = PropWord::Exact((*value >> 32) as i32);
+
+                self.stack.push_i64_pair(lo, hi);
+            },
+            Instr::PushReturnAddress(_) => {
+                self.stack.push_i32(PropWord::Unknown);
+            }
+            &Instr::SetConst(reg, value) => {
+                self.registers.set_half(reg, PropWord::Exact(value));
+            },
+            Instr::Copy { dst, src } => {
+                let val = read(self.registers.get_half(*src))?;
+                self.registers.set_half(*dst, val);
+            },
+
+            Instr::SetGlobalPtr(val) => {
+                self.global_ptr = PropWord::Exact(*val as i32);
+            }
+            Instr::LoadGlobalI32(reg) => {
+                if let PropWord::Exact(ptr) = self.global_ptr {
+                    if self.globals.len() <= ptr as usize {
+                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.registers.set_half(reg.as_lo(), self.globals[ptr as usize].0);
+                } else {
+                    println!("Stopping at LoadGlobalI32");
+                    return Ok(true);
+                }
+            }
+            Instr::StoreGlobalI32(reg) => {
+                if let PropWord::Exact(ptr) = self.global_ptr {
+                    if self.globals.len() <= ptr as usize {
+                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.globals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                } else {
+                    println!("Stopping at StoreGlobalI32");
+                    return Ok(true);
+                }
+            }
+            Instr::LoadGlobalI64(reg) => {
+                if let PropWord::Exact(ptr) = self.global_ptr {
+                    if self.globals.len() <= ptr as usize {
+                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.registers.set_pair(*reg, self.globals[ptr as usize]);
+                } else {
+                    println!("Stopping at LoadGlobalI64");
+                    return Ok(true);
+                }
+ 
+            }
+            Instr::StoreGlobalI64(reg) => {
+                if let PropWord::Exact(ptr) = self.global_ptr {
+                    if self.globals.len() <= ptr as usize {
+                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.globals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                    self.globals[ptr as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
+                } else {
+                    println!("Stopping at StoreGlobalI64");
+                    return Ok(true);
+                }
+            }
+
+            Instr::SetLocalPtr(p) => {
+                self.local_ptr = PropWord::Exact(*p as i32);
+            }
+            Instr::LoadLocalI32(reg) => {
+                if let PropWord::Exact(ptr) = self.local_ptr {
+                    if self.locals.len() <= ptr as usize {
+                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                } else {
+                    println!("Stopping at LoadLocalI32");
+                }
+            }
+            Instr::StoreLocalI32(reg) => {
+                if let PropWord::Exact(ptr) = self.local_ptr {
+                    if self.locals.len() <= ptr as usize {
+                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                } else {
+                    println!("Stopping at StoreLocalI32");
+                    return Ok(true);
+                }
+            }
+            Instr::LoadLocalI64(reg) => {
+                if let PropWord::Exact(ptr) = self.local_ptr {
+                    if self.locals.len() <= ptr as usize {
+                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                    self.locals[ptr as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
+                } else {
+                    println!("Stopping at LoadLocalI64");
+                }
+            }
+            Instr::StoreLocalI64(reg) => {
+                if let PropWord::Exact(ptr) = self.local_ptr {
+                    if self.locals.len() <= ptr as usize {
+                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                    }
+
+                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                    self.locals[ptr as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
+                } else {
+                    println!("Stopping at StoreLocalI64");
+                    return Ok(true);
+                }
+            }
+            Instr::ResetFrames => todo!(),
+            Instr::PushFrame(_) => {
+                self.locals = Vec::new();
+            }
+            Instr::PopFrame(_) => {
+                self.locals = Vec::new();
+            }
+
+            Instr::SetMemPtr(_) => {}
+            Instr::LoadI32(reg, _) |
+            Instr::LoadI32_8U(reg, _) | 
+            Instr::LoadI32_8S(reg, _) |
+            Instr::LoadI32_16U(reg, _) |
+            Instr::LoadI32_16S(reg, _) => self.registers.set_half(reg.as_lo(), PropWord::Unknown),
+            Instr::StoreI32(_, _) |
+            Instr::StoreI32_8(_, _) |
+            Instr::StoreI32_16(_, _) => {},
+
+            &Instr::I32Op { dst, lhs, op, rhs } => {
+                let l = read(self.registers.get_half(lhs))?;
+                let r = read(self.registers.get_half(rhs))?;
+
+                if let PropWord::Exact(r) = r {
+                    if op == "+=" {
+                        self.actions.push(OptAction::Replace {
+                            idx: self.pc,
+                            instr: Instr::AddI32Const(lhs, r)
+                        })
+                    } else if op == "-=" {
+                        self.actions.push(OptAction::Replace {
+                            idx: self.pc,
+                            instr: Instr::AddI32Const(lhs, r.wrapping_neg()),
+                        })
+                    } else {
+                        println!("{} {}", op, r);
+                    }
+                }
+
+                if let (PropWord::Exact(l), PropWord::Exact(r)) = (l, r) {
+                    let d = eval_i32_op(lhs, rhs, l, op, r, &mut self.registers);
+                    self.registers.set_half(dst, PropWord::Exact(d));
+                } else {
+                    self.registers.set_half(dst, PropWord::Unknown)
+                }
+            }
+            &Instr::I32Eqz { val, cond } => {
+                let v = read(self.registers.get_half(val.as_lo()))?;
+                if let PropWord::Exact(v) = v {
+                    self.registers.set_half(cond.as_lo(), PropWord::Exact((v == 0) as i32))
+                } else {
+                    self.registers.set_half(cond.as_lo(), PropWord::Unknown);
+                }
+            } 
+            &Instr::AddI32Const(reg, val) => {
+                let v = read(self.registers.get_half(reg))?;
+                self.registers.set_half(reg, v.map(|v| v.wrapping_add(val)));
+            },
+            Instr::I32Extend8S(reg) => {
+                let v = read(self.registers.get_half(reg.as_lo()))?;
+                self.registers.set_half(reg.as_lo(), v.map(|val| val as i8 as i32));
+            },
+            Instr::I32Extend16S(reg) => {
+                let v = read(self.registers.get_half(reg.as_lo()))?;
+                self.registers.set_half(reg.as_lo(), v.map(|val| val as i16 as i32));
+            }, 
+            
+
+            i => {
+                // TODO:
+                println!("Stopping const prop at {:?}", i);
+                return Ok(true);
+            }
+
+            /*
+            Instr::I32Popcnt(_) => todo!(),
+            Instr::I32Ctz(_) => todo!(),
+            Instr::I32Clz(_) => todo!(),
+
+            Instr::I64Add { dst, lhs, rhs } => todo!(),
+            Instr::I64DivS { dst, lhs, rhs } => todo!(),
+            Instr::I64DivU { dst, lhs, rhs } => todo!(),
+            Instr::I64RemS { dst, lhs, rhs } => todo!(),
+            Instr::I64RemU { dst, lhs, rhs } => todo!(),
+            Instr::I64Rotl { dst, lhs, rhs } => todo!(),
+            Instr::I64Rotr { dst, lhs, rhs } => todo!(),
+            Instr::I64Eq { dst, lhs, invert, rhs } => todo!(),
+            Instr::I64UComp { dst, lhs, op, rhs } => todo!(),
+            Instr::I64SComp { dst, lhs, op, rhs } => todo!(),
+            Instr::I64Shl { dst, lhs, rhs } => todo!(),
+            Instr::I64ShrU { dst, lhs, rhs } => todo!(),
+            Instr::I64ShrS { dst, lhs, rhs } => todo!(),
+
+            Instr::I32MulTo64 { dst, lhs, rhs } => todo!(),
+            Instr::I64Clz { dst, src } => todo!(),
+            Instr::I64Ctz { dst, src } => todo!(),
+            Instr::StoreRow(_) => todo!(),
+            Instr::I64ExtendI32S { dst, src } => todo!(),
+            Instr::I64ExtendI32U(_) => todo!(),
+            Instr::I64Eqz { val, cond } => todo!(),
+            Instr::SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => todo!(),
+            Instr::SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => todo!(),
+            Instr::Unreachable => todo!(),
+            */
+        }
+
+        self.pc += 1;
+
+        Ok(self.pc == self.block.instrs.len())
+    }
+}
+
+fn eval_i32_op<T: Copy>(lhs: HalfRegister, rhs: HalfRegister, l: i32, op: &str, r: i32, registers: &mut RegFile<T>) -> i32 {
+    match op {
+        "+=" => l.wrapping_add(r),
+        "-=" => l.wrapping_sub(r),
+        "*=" => l.wrapping_mul(r),
+        "/=" => {
+            registers.clobber_half(lhs);
+            registers.clobber_half(rhs);
+            l.wrapping_div(r)
+        },
+        "/=u" => ((l as u32) / (r as u32)) as i32,
+        "remu" => ((l as u32) % (r as u32)) as i32,
+        "rems" => l.wrapping_rem(r),
+        "&=" => l & r,
+        "|=" => l | r,
+        "^=" => l ^ r,
+        "shl" => l.wrapping_shl(r as u32),
+        "shru" => ((l as u32).wrapping_shr(r as u32)) as i32,
+        "shrs" => {
+            registers.clobber_half(rhs);
+            l.wrapping_shr(r as u32)
+        },
+        "rotl" => l.rotate_left((r as u32) % 32),
+        "rotr" => l.rotate_right((r as u32) % 32),
+        "==" => (l == r) as i32,
+        "!=" => (l != r) as i32,
+        "lts" => (l <  r) as i32,
+        "les" => (l <= r) as i32,
+        "gts" => (l >  r) as i32,
+        "ges" => (l >= r) as i32,
+        "leu" => ((l as u32) <= (r as u32)) as i32,
+        "ltu" => ((l as u32) <  (r as u32)) as i32,
+        "geu" => ((l as u32) >= (r as u32)) as i32,
+        "gtu" => ((l as u32) >  (r as u32)) as i32,
+        o => todo!("{:?}", o),
+    }
 }
