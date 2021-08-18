@@ -101,7 +101,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Chain;
+const BRANCH_CONV: BranchConv = BranchConv::Direct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Axis {
@@ -649,10 +649,14 @@ impl<'a> CodeEmitter<'a> {
             }
 
             &I64Eq { dst, lhs, invert, rhs } => {
-                self.body.push(format!("execute store success score {} reg if score {} reg = {} reg if score {} reg = {} reg", dst.as_lo(), lhs.as_lo(), rhs.as_lo(), lhs.as_hi(), rhs.as_hi()));
+                let dst = dst.as_lo();
+
+                self.body.push(format!("scoreboard players set {} reg 1", dst));
+                self.body.push(format!("execute unless score {} reg = {} reg run scoreboard players set {} reg 0", lhs.as_lo(), rhs.as_lo(), dst));
+                self.body.push(format!("execute unless score {} reg = {} reg run scoreboard players set {} reg 0", lhs.as_hi(), rhs.as_hi(), dst));
 
                 if invert {
-                    self.body.push(format!("execute store success score {} reg if score {} reg matches 0..0", dst.as_lo(), dst.as_lo()));
+                    self.body.push(format!("execute store success score {} reg if score {} reg matches 0..0", dst, dst));
                 }
             }
             &I64UComp { dst, mut lhs, mut op, mut rhs } => {
@@ -819,7 +823,7 @@ impl<'a> CodeEmitter<'a> {
                 self.emit_push_i64_const(value);
             }
             PushReturnAddress(label) => {
-                let return_name = get_block(&label);
+                let return_name = get_block(label);
 
                 self.emit_stack_save();
 
@@ -1115,10 +1119,12 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit_real_stack_resize(&mut self, target_size: usize) {
-        if self.op_stack.real_size < target_size {
-            self.emit_stack_save_to(target_size);
-        } else if self.op_stack.real_size > target_size {
-            todo!()
+        use std::cmp::Ordering;
+
+        match self.op_stack.real_size.cmp(&target_size) {
+            Ordering::Less => self.emit_stack_save_to(target_size),
+            Ordering::Equal => {}
+            Ordering::Greater => todo!(),
         }
     }
 
@@ -3666,6 +3672,14 @@ impl FuncBodyStream {
                 self.mark_unreachable();
             }
 
+            // TODO: Actually implement a non-failing version of this
+            MemoryGrow { .. } => {
+                self.op_stack.pop_i32();
+                self.push_instr(Instr::Drop);
+                self.push_instr(Instr::PushI32Const(0xFFFF_FFFF_u32 as i32));
+                self.op_stack.push_i32();
+            }
+
             _ => todo!("{:?}", o),
         }
     }
@@ -4247,7 +4261,7 @@ fn parse_wasm_file(file: &[u8]) -> WasmFile {
 
     let mut codes = Vec::new();
 
-    for payload in Parser::new(0).parse_all(&file) {
+    for payload in Parser::new(0).parse_all(file) {
         let payload = payload.unwrap();
         match payload {
             Payload::Version { .. } => {
@@ -4608,6 +4622,8 @@ fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
 }
 
 fn optimize_mir(basic_blocks: &mut [BasicBlock<Instr>]) {
+    return;
+    
     let stack_states = get_stack_states(basic_blocks);
 
     for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {
@@ -4617,8 +4633,6 @@ fn optimize_mir(basic_blocks: &mut [BasicBlock<Instr>]) {
 
         state::apply_actions(bb, actions);
     }
-
-    panic!();
 }
 
 fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
@@ -4645,7 +4659,7 @@ fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bo
         mc_functions.push((name, contents));
     }
 
-    let dyn_branch = create_return_jumper(&basic_blocks);
+    let dyn_branch = create_return_jumper(basic_blocks);
     mc_functions.push(("dyn_branch".to_string(), dyn_branch));
 
     let mut setup = "\
@@ -5101,7 +5115,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
                 let pc = pc.expect("sync hit but MIR halted");
 
                 if pc == (f, i) {
-                    compare_states(&mir, &cmd);
+                    compare_states(mir, cmd);
 
                     println!();
                     mir.step().unwrap();
@@ -5112,7 +5126,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
             Ok(()) => {
                 assert!(pc.is_none());
 
-                compare_states(&mir, &cmd);
+                compare_states(mir, cmd);
 
                 break;
             }
@@ -5181,9 +5195,9 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
 }
 
 fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> Vec<WasmValue> {
-    let mut mir = setup_state(&basic_blocks, wasm_file);
+    let mut mir = setup_state(basic_blocks, wasm_file);
 
-    let mut cmd = setup_commands(&mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
+    let mut cmd = setup_commands(mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
 
     let func_idx = wasm_file.exports.get_func("_start");
     let func_ty = wasm_file.functions.get_function_type(func_idx, &wasm_file.types);
