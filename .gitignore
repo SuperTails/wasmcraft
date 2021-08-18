@@ -1,1 +1,3 @@
 /target
+/tests/wasm_suite
+Cargo.lock

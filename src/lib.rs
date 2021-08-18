@@ -2,8 +2,9 @@ mod datapack;
 mod state;
 mod sexpr;
 
-use datapack_common::functions::{Command, Function, Objective, ScoreHolder};
-use datapack_common::functions::FunctionIdent as FunctionId;
+use datapack_common::functions::{Command, Function};
+use datapack_common::functions::command_components::{ScoreHolder, Objective};
+use datapack_common::functions::command_components::FunctionIdent as FunctionId;
 
 use datapack_vm::interpreter::Interpreter;
 use std::convert::TryInto;
@@ -3935,7 +3936,7 @@ fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>) {
                     let n = &n[..n.len() - ".mcfunction".len()];
 
                     let contents = std::fs::read_to_string(j.path()).unwrap();
-                    datapack.write_function(folder_path, "intrinsic", &n, &contents).unwrap();
+                    datapack.write_function(folder_path, "intrinsic", n, &contents).unwrap();
                 }
             }
         } else {
@@ -5256,7 +5257,7 @@ mod test {
     use wasmparser::ResizableLimits;
     use std::path::Path;
 
-    fn run_wasm_file(path: &Path) -> i32 {
+    /*fn run_wasm_file(path: &Path) -> i32 {
         use wasmtime::{Engine, Module, Instance, Store};
 
         let engine = Engine::default();
@@ -5267,7 +5268,7 @@ mod test {
         let instance = Instance::new(&mut store, &module, &[]).unwrap();
         let start_func = instance.get_typed_func::<(), i32, _>(&mut store, "_start").unwrap();
         start_func.call(&mut store, ()).unwrap()
-    }
+    }*/
 
     fn test_whole_program(path: &Path, expected: i32) {
         test_whole_program2(path, (expected, None))
