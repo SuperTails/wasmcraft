@@ -1283,7 +1283,11 @@ impl<'a> CodeEmitter<'a> {
 pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
+    println!("Started getting stack states");
+
     let stack_states = get_stack_states(basic_blocks);
+
+    println!("Done getting stack states");
 
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
         let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync, Some(&stack_states[bb_idx]));

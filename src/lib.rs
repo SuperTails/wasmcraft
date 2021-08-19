@@ -4,6 +4,7 @@ mod sexpr;
 mod code_emitter;
 mod mir;
 mod wasm;
+mod cmd_info;
 
 use datapack_common::functions::{Command, Function};
 use datapack_common::functions::command_components::{ScoreHolder, Objective};
@@ -108,7 +109,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Chain;
+const BRANCH_CONV: BranchConv = BranchConv::Direct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Half {
@@ -557,6 +558,8 @@ pub fn run(run_options: &RunOptions) {
 
     let mc_functions = assemble(&basic_blocks, &wasm_file, VERIFY_OUTPUT);
 
+    println!("Done assembling");
+
     for func in mc_functions.iter() {
         println!("F: {:?}", func.0)
     }
@@ -836,17 +839,17 @@ fn get_stack_states(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
 }
 
 fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
-    return;
-    
     let stack_states = get_stack_states(basic_blocks);
 
     for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {
-        let actions = state::get_actions(bb, &state.entry.stack);
+        let actions = state::const_prop::get_actions(bb, &state.entry.stack);
 
         println!("{:?} {:?}", bb.label, actions);
 
         state::apply_actions(bb, actions);
     }
+
+    println!("Done optimizing");
 }
 
 fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
