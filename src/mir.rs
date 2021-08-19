@@ -40,6 +40,11 @@ pub enum Instr {
     PushI64Const(i64),
     PushReturnAddress(Label),
 
+    PopI32Into(Register),
+    PopI64Into(Register),
+
+    Drop,
+
     Call(CodeFuncIdx),
     DynCall(Register, Option<u32>),
 
@@ -73,9 +78,6 @@ pub enum Instr {
     I32Clz(Register),
     I64Clz { dst: Register, src: Register },
     I64Ctz { dst: Register, src: Register },
-
-    PopI32Into(Register),
-    PopI64Into(Register),
 
     LoadLocalI32(Register),
     StoreLocalI32(Register),
@@ -113,7 +115,6 @@ pub enum Instr {
     PushFrame(u32),
     PopFrame(u32),
 
-    Drop,
     SelectI32 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
     SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 

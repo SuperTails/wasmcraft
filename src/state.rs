@@ -6,6 +6,7 @@ use wasmparser::Type;
 use std::convert::TryFrom;
 
 pub mod const_prop;
+pub mod stack_drops;
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]

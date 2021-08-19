@@ -20,6 +20,17 @@ impl UsageSet {
         UsageSet::Some(HashMap::new())
     }
 
+    pub fn merge(&mut self, other: UsageSet) {
+        match other {
+            UsageSet::All => *self = UsageSet::All,
+            UsageSet::Some(m) => {
+                for (player, usage) in m {
+                    self.add_usage(player, usage);
+                }
+            }
+        }
+    }
+
     pub fn add_usage(&mut self, player: ScoreboardPlayer, usage: Usage) {
         match self {
             UsageSet::All => {},
@@ -95,6 +106,19 @@ pub fn has_side_effect(cmd: &Command) -> bool {
 
 fn get_scoreboard_player(target: ScoreboardTarget, target_obj: Objective) -> ScoreboardPlayer {
     let target = if let ScoreboardTarget::Target(Target::Name(target)) = target {
+        target
+    } else {
+        todo!()
+    };
+
+    ScoreboardPlayer {
+        player: Rc::new(target),
+        scoreboard: Rc::new(target_obj),
+    }
+}
+
+fn get_scoreboard_player2(target: Target, target_obj: Objective) -> ScoreboardPlayer {
+    let target = if let Target::Name(target) = target {
         target
     } else {
         todo!()
@@ -235,6 +259,43 @@ pub fn get_usages(cmd: &Command) -> UsageSet {
 
             UsageSet::Some(result.into_iter().collect())
         }
+        Command::Execute(Execute { subcommands, run }) => {
+            let mut usages = UsageSet::Some(HashMap::new());
+
+            use datapack_common::functions::command::ExecuteSubCommand as Cmd;
+            use datapack_common::functions::command::execute_sub_commands::*;
+
+            for subcmd in subcommands.0.iter() {
+                match subcmd {
+                    Cmd::IfScoreMatches(IfScoreMatches { target, target_obj, .. }) => {
+                        let target = get_scoreboard_player2(target.clone(), target_obj.clone());
+                        usages.add_usage(target, Usage::Read);
+                    }
+                    Cmd::IfScoreRelation(IfScoreRelation { target, target_obj, source, source_obj, .. }) => {
+                        let target = get_scoreboard_player2(target.clone(), target_obj.clone());
+                        let source = get_scoreboard_player2(source.clone(), source_obj.clone());
+                        usages.add_usage(target, Usage::Read);
+                        usages.add_usage(source, Usage::Read);
+                    }
+                    Cmd::StoreScore(StoreScore { target, target_obj, .. }) => {
+                        let target = get_scoreboard_player2(target.clone(), target_obj.clone());
+                        usages.add_usage(target, Usage::Write);
+                    }
+                    Cmd::StoreStorage { .. } |
+                    Cmd::IfBlock { .. } |
+                    Cmd::As { .. } |
+                    Cmd::At { .. } |
+                    Cmd::Positioned { .. } => {},
+                }
+            }
+
+            if let Some(run) = &run.0 {
+                usages.merge(get_usages(run));
+            }
+
+            usages
+        }
+        Command::Teleport(..) => UsageSet::Some(HashMap::new()),
         // TODO:
         _ => UsageSet::All,
     }
@@ -281,8 +342,7 @@ mod test {
     #[test]
     fn dead_write_elim2() {
         let s = 
-r##"
-# PushFrame(7)
+r##"# PushFrame(7)
 # Push frame with 7 locals
 execute at @e[tag=frameptr] run fill ~ ~ ~ ~6 ~ ~1 minecraft:jukebox{RecordItem:{id:"minecraft:stone",Count:1b,tag:{Memory:0}}}
 execute as @e[tag=frameptr] at @e[tag=frameptr] run tp @s ~7 ~ ~
@@ -309,9 +369,11 @@ scoreboard players set %stack%0%hi reg 0
 # LocalSet { local_index: 2 }
 # SetLocalPtr(2)
 execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-3 0 1
-# PopI64Into(Work(0))
-scoreboard players operation %work%0%lo reg = %stack%0%lo reg
-scoreboard players operation %work%0%hi reg = %stack%0%hi reg
+# Drop
+# SetConst(HalfRegister(Work(0), Lo), 63)
+scoreboard players set %work%0%lo reg 63
+# SetConst(HalfRegister(Work(0), Hi), 0)
+scoreboard players set %work%0%hi reg 0
 # StoreLocalI64(Work(0))
 execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
 execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
@@ -324,9 +386,11 @@ scoreboard players set %stack%0%hi reg 0
 # LocalSet { local_index: 3 }
 # SetLocalPtr(3)
 execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-4 0 1
-# PopI64Into(Work(0))
-scoreboard players operation %work%0%lo reg = %stack%0%lo reg
-scoreboard players operation %work%0%hi reg = %stack%0%hi reg
+# Drop
+# SetConst(HalfRegister(Work(0), Lo), 0)
+scoreboard players set %work%0%lo reg 0
+# SetConst(HalfRegister(Work(0), Hi), 0)
+scoreboard players set %work%0%hi reg 0
 # StoreLocalI64(Work(0))
 execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
 execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
@@ -339,9 +403,11 @@ scoreboard players set %stack%0%hi reg 0
 # LocalSet { local_index: 4 }
 # SetLocalPtr(4)
 execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~-5 0 1
-# PopI64Into(Work(0))
-scoreboard players operation %work%0%lo reg = %stack%0%lo reg
-scoreboard players operation %work%0%hi reg = %stack%0%hi reg
+# Drop
+# SetConst(HalfRegister(Work(0), Lo), 0)
+scoreboard players set %work%0%lo reg 0
+# SetConst(HalfRegister(Work(0), Hi), 0)
+scoreboard players set %work%0%hi reg 0
 # StoreLocalI64(Work(0))
 execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get %work%0%lo reg
 execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get %work%0%hi reg
@@ -350,8 +416,7 @@ execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 
 #   Branch to __wasm0_3
 #   Jump to __wasm0_3
 function wasm:__wasm0_3
-scoreboard players set %%taken wasm 1
-"##;
+scoreboard players set %%taken wasm 1"##;
 
         let code = s.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<&str>>();
 

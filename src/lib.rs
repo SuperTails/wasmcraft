@@ -846,14 +846,18 @@ fn get_stack_states(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
 }
 
 fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
-    return;
-
     let stack_states = get_stack_states(basic_blocks);
 
     for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {
+        if bb.instrs.is_empty() {
+            continue;
+        }
+
         let actions = state::const_prop::get_actions(bb, &state.entry.stack);
 
-        println!("{:?} {:?}", bb.label, actions);
+        state::apply_actions(bb, actions);
+
+        let actions = state::stack_drops::get_actions(bb, &state.entry.stack);
 
         state::apply_actions(bb, actions);
     }

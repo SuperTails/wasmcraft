@@ -30,8 +30,6 @@ impl Default for PropWord {
 pub(crate) struct ConstProp<'a> {
     block: &'a MirBasicBlock,
 
-    globals: Vec<(PropWord, PropWord)>,
-
     registers: RegFile<PropWord>,
     stack: Stack<PropWord>,
 
@@ -66,7 +64,6 @@ impl<'a> ConstProp<'a> {
             block,
             registers: RegFile::new(),
             stack,
-            globals: Vec::new(),
             local_ptr: PropWord::Unknown,
             locals: Vec::new(),
             actions: Vec::new(),
