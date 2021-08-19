@@ -914,13 +914,9 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     ".to_string();
 
     setup.push_str("\n# Make stack\n");
-    setup.push_str("fill 0 0 0 30 0 0 minecraft:air replace\n");
-    setup.push_str("fill 0 0 0 30 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
+    setup.push_str("fill 0 0 0 50 0 0 minecraft:air replace\n");
+    setup.push_str("fill 0 0 0 50 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
     
-    setup.push_str("\n# Make condition stack\n");
-    setup.push_str("fill 0 3 0 100 3 0 minecraft:air replace\n");
-    setup.push_str("fill 0 3 0 100 3 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
-
     let mc_functions = [("setup".to_string(), setup)];
 
     let mut interp = prepare_interp(&mc_functions);
