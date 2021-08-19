@@ -1,6 +1,6 @@
-use crate::{BRANCH_CONV, BasicBlock, BranchConv, BranchTarget, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_intrinsic_counts, get_stack_states, get_tables};
+use crate::{BRANCH_CONV, BranchConv, BranchTarget, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_entry_point, get_intrinsic_counts, get_stack_states, get_tables};
 use crate::wasm::{GlobalList, WasmFile};
-use crate::mir::{Instr, Relation, FuncBodyStream};
+use crate::mir::{FuncBodyStream, Instr, MirBasicBlock, Relation, Terminator};
 use wasmparser::{ExternalKind, Type, TypeOrFuncType};
 
 pub struct CodeEmitter<'a> {
@@ -62,7 +62,7 @@ impl<'a> CodeEmitter<'a> {
         self.body
     }
 
-    pub fn emit_all(basic_block: &BasicBlock<Instr>, global_list: &GlobalList, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
+    pub fn emit_all(basic_block: &MirBasicBlock, global_list: &GlobalList, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
         println!("\nSTARTING {:?}", basic_block.label);
         println!("{:?}", state_info);
 
@@ -71,6 +71,7 @@ impl<'a> CodeEmitter<'a> {
         for i in basic_block.instrs.iter() {
             emitter.emit(i, global_list);
         }
+        emitter.emit_terminator(&basic_block.terminator);
         emitter.finalize()
     }
 
@@ -100,6 +101,53 @@ impl<'a> CodeEmitter<'a> {
         self.body.push(format!("# {:?}", instr));
 
         self.emit_inner(instr, global_list);
+
+        self.emit_sync();
+    }
+
+    pub fn emit_terminator(&mut self, term: &Terminator) {
+        match term {
+            Terminator::Branch(target) => {
+                self.jump_begin();
+                self.branch(target);
+                self.jump_end();
+            }
+            Terminator::Call { func_idx, return_addr: _ } => {
+                let target = BranchTarget {
+                    label: Label::new(*func_idx, 0),
+                    to_pop: 0,
+                    ty: Box::new([]),
+                };
+
+                self.jump_begin();
+                self.branch(&target);
+                self.jump_end();
+            }
+            &Terminator::DynBranch(reg, table_idx) => {
+                assert_eq!(reg, Register::Work(0));
+
+                self.emit_stack_save();
+
+                if let Some(i) = table_idx {
+                    self.body.push(format!("function wasm:dyn_branch{}", i));
+                } else {
+                    self.body.push("function wasm:dyn_branch".to_string());
+                }
+            }
+            Terminator::BranchIf { t_name, f_name, cond } => {
+                self.branch_begin(cond.as_lo());
+                self.branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name));
+                self.branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name));
+                self.branch_end();
+            }
+            Terminator::BranchTable { reg, targets, default } => {
+                let targets = targets.iter().map(Some);
+
+                self.lower_branch_table(*reg, targets, default.as_ref());
+            }
+            Terminator::Halt => {}
+            t => todo!("{:?}", t)
+        }
 
         self.emit_sync();
     }
@@ -151,6 +199,12 @@ impl<'a> CodeEmitter<'a> {
                     self.body.push(format!("execute at @e[tag=turtle] if block ~ ~ ~ {} run scoreboard players set {} reg {}", b, reg.get_lo(), i));
                 }
             }
+
+            Call(i) => {
+                let name = get_entry_point(*i);
+                self.body.push(format!("function wasm:{}", name));
+            }
+            DynCall(_, _) => todo!(),
 
             Copy { dst, src } => {
                 if dst != src {
@@ -536,35 +590,6 @@ impl<'a> CodeEmitter<'a> {
                 //self.op_stack.push_i32();
             }
 
-            Branch(target) => {
-                self.jump_begin();
-                self.branch(target);
-                self.jump_end();
-            }
-            &DynBranch(reg, table_idx) => {
-                assert_eq!(reg, Register::Work(0));
-
-                self.emit_stack_save();
-
-                if let Some(i) = table_idx {
-                    self.body.push(format!("function wasm:dyn_branch{}", i));
-                } else {
-                    self.body.push("function wasm:dyn_branch".to_string());
-                }
-            }
-            BranchIf { t_name, f_name, cond } => {
-                self.body.push(format!("#   {:?}", instr));
-
-                self.branch_begin(cond.as_lo());
-                self.branch_arm("execute if score %%taken wasm matches 0 unless score %%tempcond reg matches 0..0 run ", Some(t_name));
-                self.branch_arm("execute if score %%taken wasm matches 0 if score %%tempcond reg matches 0..0 run ", Some(f_name));
-                self.branch_end();
-            }
-            BranchTable { reg, targets, default } => {
-                let targets = targets.iter().map(Some);
-
-                self.lower_branch_table(*reg, targets, default.as_ref());
-            }
 
             LoadGlobalI64(reg) => {
                 self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
@@ -1255,7 +1280,7 @@ impl<'a> CodeEmitter<'a> {
 
 }
 
-pub fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
+pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bool) -> Vec<(String, String)> {
     let mut mc_functions = Vec::new();
 
     let stack_states = get_stack_states(basic_blocks);
@@ -1312,7 +1337,7 @@ pub fn assemble(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile, insert_sync
     mc_functions
 }
 
-fn create_return_jumper(basic_blocks: &[BasicBlock<Instr>]) -> String {
+fn create_return_jumper(basic_blocks: &[MirBasicBlock]) -> String {
     let targets = basic_blocks.iter()
         .map(|bb| BranchTarget {
             label: bb.label.clone(),
@@ -1586,7 +1611,7 @@ fn create_caller_function(mc_functions: &[(String, String)], index: CodeFuncIdx,
     let func_ty = file.functions.functions[index.0 as usize];
 
     let mut f = FuncBodyStream::new(TypeOrFuncType::FuncType(func_ty), &file.types, index);
-    f.basic_blocks.push(BasicBlock::new(CodeFuncIdx(0), 0, OpStack::new()));
+    f.basic_blocks.push(MirBasicBlock::new(CodeFuncIdx(0), 0, OpStack::new()));
 
     if BRANCH_CONV != BranchConv::Direct {
         f.push_instr(Instr::PushI32Const(-1));

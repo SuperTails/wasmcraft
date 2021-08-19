@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{BRANCH_CONV, BasicBlock, BranchConv, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
+use crate::{BRANCH_CONV, BranchConv, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
 use wasmparser::{FuncType, MemoryImmediate, Operator, Type, TypeDef, TypeOrFuncType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,15 +40,11 @@ pub enum Instr {
     PushI64Const(i64),
     PushReturnAddress(Label),
 
+    Call(CodeFuncIdx),
+    DynCall(Register, Option<u32>),
+
     SetConst(HalfRegister, i32),
     Copy { dst: HalfRegister, src: HalfRegister },
-
-    Branch(BranchTarget),
-    // Index into table, index of table
-    // (None represents the wasmcraft-specific table)
-    DynBranch(Register, Option<u32>),
-    BranchIf { t_name: BranchTarget, f_name: BranchTarget, cond: Register },
-    BranchTable { reg: Register, targets: Vec<BranchTarget>, default: Option<BranchTarget> },
 
     I64Add { dst: Register, lhs: Register, rhs: Register },
     I64DivS { dst: Register, lhs: Register, rhs: Register },
@@ -309,7 +305,7 @@ impl Instr {
 
 }
 
-pub fn get_reachable_blocks(body: &[BasicBlock<Instr>]) -> Vec<bool> {
+pub fn get_reachable_blocks(body: &[MirBasicBlock]) -> Vec<bool> {
     let mut reachable = vec![false; body.len()];
     let mut to_visit = vec![0];
 
@@ -328,103 +324,52 @@ pub fn get_reachable_blocks(body: &[BasicBlock<Instr>]) -> Vec<bool> {
     reachable
 }
 
-// FIXME: This is broken
-pub fn get_next_blocks(basic_block: &BasicBlock<Instr>) -> Vec<usize> {
-    let body = get_body_instrs(basic_block);
-    let term = get_term_instrs(basic_block);
-
-    let mut return_addr = None;
-
-    for instr in body.iter() {
-        match instr {
-            Instr::PushReturnAddress(l) => {
-                // The return address is considered to be on the callee's stack
-                assert!(return_addr.is_none());
-                return_addr = Some(l);
-            }
-            Instr::Branch(_) => todo!(),
-            Instr::BranchIf { .. } => todo!(),
-            Instr::BranchTable { .. } => todo!(),
-            Instr::DynBranch(..) => todo!(),
-            _ => {}
+pub fn get_next_blocks(basic_block: &MirBasicBlock) -> Vec<usize> {
+    match &basic_block.terminator {
+        Terminator::Halt => Vec::new(),
+        Terminator::Branch(b) => {
+            assert_eq!(b.label.func_idx, basic_block.label.func_idx);
+            vec![b.label.idx]
         }
+        Terminator::BranchIf { t_name, f_name, cond: _ } => {
+            assert_eq!(t_name.label.func_idx, basic_block.label.func_idx);
+            assert_eq!(f_name.label.func_idx, basic_block.label.func_idx);
+            vec![t_name.label.idx, f_name.label.idx]
+        }
+        Terminator::BranchTable { targets, default, reg: _ } => {
+            let mut result = Vec::new();
+
+            if let Some(default) = default {
+                assert_eq!(default.label.func_idx, basic_block.label.func_idx);
+                result.push(default.label.idx);
+            }
+
+            for target in targets.iter() {
+                assert_eq!(target.label.func_idx, basic_block.label.func_idx);
+                result.push(target.label.idx);
+            }
+
+            result
+        }
+        Terminator::Call { return_addr, func_idx: _ } => {
+            assert_eq!(return_addr.func_idx, basic_block.label.func_idx);
+            vec![return_addr.idx]
+        }
+        Terminator::DynCall { return_addr, table_index: _, reg: _ } => {
+            assert_eq!(return_addr.func_idx, basic_block.label.func_idx);
+            vec![return_addr.idx]
+        }
+        Terminator::DynBranch(..) => Vec::new(),
     }
-
-    term.iter().flat_map(|t| {
-        match t {
-            Instr::Branch(t) => {
-                vec![&t.label]
-            }
-            Instr::BranchIf { t_name, f_name, .. } => {
-                vec![&t_name.label, &f_name.label]
-            }
-            Instr::BranchTable { targets, default, .. } => {
-                let mut result = Vec::new();
-
-                result.extend(targets.iter().map(|t| &t.label));
-                result.extend(default.iter().map(|t| &t.label));
-
-                result
-            }
-            Instr::DynBranch(..) => {
-                return_addr.into_iter().collect()
-            }
-            _ => todo!("{:?}", t)
-        }
-    }).map(|t| {
-        if t.func_idx != basic_block.label.func_idx {
-            return_addr.unwrap().idx
-        } else {
-            t.idx
-        }
-    }).collect()
 }
 
-pub fn get_first_term_instr(basic_block: &BasicBlock<Instr>) -> usize {
-    // TODO: Internal branches
-    basic_block.instrs.iter().enumerate().find_map(|(idx, instr)| {
-        match instr {
-            Instr::Branch(_) => {
-                Some(idx)
-            }
-            Instr::BranchIf { .. } => {
-                Some(idx)
-            }
-            Instr::BranchTable { .. } => {
-                Some(idx)
-            }
-            Instr::DynBranch(_, _) => {
-                Some(idx)
-            }
-            _ => None
-        }
-    }).unwrap_or(basic_block.instrs.len())
-}
-
-pub fn get_body_instrs(basic_block: &BasicBlock<Instr>) -> &[Instr] {
-    let idx = get_first_term_instr(basic_block);
-    &basic_block.instrs[..idx]
-}
-
-pub fn get_term_instrs(basic_block: &BasicBlock<Instr>) -> &[Instr] {
-    let idx = get_first_term_instr(basic_block);
-    &basic_block.instrs[idx..]
-}
-
-pub fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack) -> Vec<(usize, RealOpStack)> {
-    let body = get_body_instrs(basic_block);
-    let term = get_term_instrs(basic_block);
-
+pub fn get_next_state(basic_block: &MirBasicBlock, entry_state: RealOpStack) -> Vec<(usize, RealOpStack)> {
     let mut state = entry_state;
 
-    let mut return_addr = None;
-
-    for instr in body.iter() {
+    for instr in basic_block.instrs.iter() {
         match instr {
-            Instr::PushReturnAddress(l) => {
+            Instr::PushReturnAddress(_) => {
                 // The return address is considered to be on the callee's stack
-                assert!(return_addr.is_none());
-                return_addr = Some(l);
             }
             Instr::Drop => { state.pop_value(); },
             Instr::PushI32Const(_) => state.push_i32(),
@@ -433,60 +378,42 @@ pub fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack)
             Instr::PushI64From(..) => state.push_i64(),
             Instr::PopI32Into(..) => { state.pop_i32(); },
             Instr::PopI64Into(..) => { state.pop_i64(); },
-            Instr::Branch(t) => {
-                for ty in t.ty.iter() {
-                    state.pop_ty(*ty);                   
-                }
-
-                for _ in 0..t.to_pop {
-                    state.pop_value();
-                }
-
-                if t.label.func_idx != basic_block.label.func_idx {
-                    state.reify_all();
-                }
-            },
-            Instr::BranchIf { .. } => todo!(),
-            Instr::BranchTable { .. } => todo!(),
-            Instr::DynBranch(..) => {
+            Instr::Call { .. } |
+            Instr::DynCall { .. } => {
                 state.reify_all();
-            }, 
+            },
             _ => {}
         }
     }
 
-    let mut result = HashMap::new();
+    let dummy_branch = BranchTarget {
+        label: Label::new(CodeFuncIdx(0), 0),
+        to_pop: 0,
+        ty: Box::new([])
+    };
 
-    let next_blocks = term.iter().flat_map(|t| {
-        match t {
-            Instr::Branch(t) => {
-                vec![t.clone()]
-            }
-            Instr::BranchIf { t_name, f_name, .. } => {
-                vec![t_name.clone(), f_name.clone()]
-            }
-            Instr::BranchTable { targets, default, .. } => {
-                let mut result = Vec::new();
-
-                result.extend(targets.iter().cloned());
-                result.extend(default.iter().cloned());
-
-                result
-            }
-            Instr::DynBranch(..) => {
-                if let Some(return_addr) = return_addr {
-                    vec![BranchTarget {
-                        label: return_addr.clone(),
-                        to_pop: 0,
-                        ty: Box::new([]),
-                    }]
-                } else {
-                    Vec::new()
-                }
-            }
-            _ => todo!("{:?}", t)
+    let branches = match &basic_block.terminator {
+        Terminator::Halt => Vec::new(),
+        Terminator::Branch(t) => vec![(&t.label, false, t)],
+        Terminator::BranchIf { t_name, f_name, cond: _ } => {
+            vec![(&t_name.label, false, t_name), (&f_name.label, false, f_name)]
         }
-    }).map(|t| {
+        Terminator::BranchTable { reg: _, targets, default } => {
+            let mut result = Vec::new();
+            result.extend(targets.iter().map(|t| (&t.label, false, t)));
+            result.extend(default.iter().map(|t| (&t.label, false, t)));
+            result
+        }
+        Terminator::Call { func_idx: _, return_addr } => {
+            vec![(return_addr, true, &dummy_branch)]
+        }
+        Terminator::DynCall { reg: _, table_index: _, return_addr } => {
+            vec![(return_addr, true, &dummy_branch)]
+        }
+        Terminator::DynBranch(_, _) => Vec::new(),
+    };
+
+    let states = branches.into_iter().map(|(label, is_extern, t)| {
         let mut state = state.clone();
 
         for ty in t.ty.iter().rev() {
@@ -497,7 +424,7 @@ pub fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack)
             state.pop_value();
         }
 
-        if t.label.func_idx != basic_block.label.func_idx {
+        if is_extern {
             state.reify_all();
         }
 
@@ -505,18 +432,16 @@ pub fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack)
             state.push_ty(*ty);
         }
 
-        if t.label.func_idx != basic_block.label.func_idx {
-            (return_addr.unwrap().idx, state)
-        } else {
-            (t.label.idx, state)
-        }
+        (label, state)
     });
 
-    for next_block in next_blocks {
-        if let Some(existing) = result.get(&next_block.0) {
+    let mut result = HashMap::new();
+
+    for next_block in states {
+        if let Some(existing) = result.get(&next_block.0.idx) {
             assert_eq!(existing, &next_block.1);
         } else {
-            result.insert(next_block.0, next_block.1);
+            result.insert(next_block.0.idx, next_block.1);
         }
     }
 
@@ -525,7 +450,7 @@ pub fn get_next_state(basic_block: &BasicBlock<Instr>, entry_state: RealOpStack)
 
 pub struct FuncBodyStream {
     func_idx: CodeFuncIdx,
-    pub basic_blocks: Vec<BasicBlock<Instr>>,
+    pub basic_blocks: Vec<MirBasicBlock>,
     reachable: Vec<bool>,
     bb_index: usize,
     depth: usize,
@@ -538,12 +463,12 @@ impl FuncBodyStream {
     pub fn new(func_ty: TypeOrFuncType, types: &TypeList, func_idx: CodeFuncIdx) -> Self {
         let op_stack = if BRANCH_CONV == BranchConv::Direct { OpStack(Vec::new()) } else { OpStack(vec![Type::I32]) };
         
-        let entry_block = BasicBlock::new(func_idx, 0, op_stack.clone());
+        let entry_block = MirBasicBlock::new(func_idx, 0, op_stack.clone());
 
         let mut exit_tys = if BRANCH_CONV == BranchConv::Direct { Vec::new() } else { vec![Type::I32] };
         exit_tys.extend(Vec::from(types.get_output_tys(func_ty)));
 
-        let exit_block = BasicBlock::new(func_idx, 1, OpStack(exit_tys));
+        let exit_block = MirBasicBlock::new(func_idx, 1, OpStack(exit_tys));
 
         FuncBodyStream {
             func_idx,
@@ -579,7 +504,7 @@ impl FuncBodyStream {
                 let reg = Register::Work(0);
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::PopI32Into(reg));
-                self.push_instr(Instr::DynBranch(reg, None));
+                self.set_terminator(Terminator::DynBranch(reg, None));
             }
             BranchConv::Direct => {}
         }
@@ -622,6 +547,10 @@ impl FuncBodyStream {
 
     pub fn push_instr(&mut self, instr: Instr) {
         self.basic_blocks[self.bb_index].instrs.push(instr);
+    }
+
+    pub fn set_terminator(&mut self, term: Terminator) {
+        self.basic_blocks[self.bb_index].terminator = term;
     }
 
     pub fn next_basic_block(&mut self) {
@@ -786,22 +715,23 @@ impl FuncBodyStream {
 
         match BRANCH_CONV {
             BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
+                let return_addr = Label::new(self.func_idx, self.basic_blocks.len());
+
                 // Push return address
                 self.push_instr(Instr::Comment("  Push return address".to_string()));
-                self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
+                self.push_instr(Instr::PushReturnAddress(return_addr.clone()));
 
+                // Jump to function
+                self.set_terminator(Terminator::Call {
+                    func_idx: function_index,
+                    return_addr,
+                });
+                self.next_basic_block();
             }
-            BranchConv::Direct => {}
+            BranchConv::Direct => {
+                self.push_instr(Instr::Call(function_index));
+            }
         }
-
-        let target = BranchTarget {
-            label: Label::new(function_index, 0),
-            to_pop: 0,
-            ty: Box::new([]),
-        };
-
-        // Jump to function
-        self.push_instr(Instr::Branch(target));
     }
 
     pub fn dyn_call(&mut self, table_index: u32, ty: &FuncType) {
@@ -817,15 +747,24 @@ impl FuncBodyStream {
 
         match BRANCH_CONV {
             BranchConv::Grid | BranchConv::Loop | BranchConv::Chain => {
+                let return_addr = Label::new(self.func_idx, self.basic_blocks.len());
+
                 // Push return address
                 self.push_instr(Instr::Comment("  Push return address".to_string()));
-                self.push_instr(Instr::PushReturnAddress(Label::new(self.func_idx, self.basic_blocks.len())));
-            }
-            BranchConv::Direct => {}
-        }
+                self.push_instr(Instr::PushReturnAddress(return_addr.clone()));
 
-        // Jump to function
-        self.push_instr(Instr::DynBranch(Register::Work(0), Some(table_index)));
+                self.set_terminator(Terminator::DynCall {
+                    reg: Register::Work(0),
+                    table_index: Some(table_index),
+                    return_addr,
+                });
+                self.next_basic_block();
+            }
+            BranchConv::Direct => {
+                // Jump to function
+                self.push_instr(Instr::DynCall(Register::Work(0), Some(table_index)));
+            }
+        }
     }
 
     pub fn get_target(&self, relative_depth: u32) -> BranchTarget {
@@ -840,7 +779,7 @@ impl FuncBodyStream {
 
     fn allocate_block(&mut self, op_stack: OpStack) -> usize {
         let idx = self.basic_blocks.len();
-        self.basic_blocks.push(BasicBlock::new(self.func_idx, idx, op_stack));
+        self.basic_blocks.push(MirBasicBlock::new(self.func_idx, idx, op_stack));
         self.reachable.push(true);
         idx
     }
@@ -911,13 +850,6 @@ impl FuncBodyStream {
                     self.push_instr(Instr::Comment(format!("#   wasm:{}", get_entry_point(function_index))));
 
                     self.static_call(function_index, &wasm_file.types, &wasm_file.functions);
-
-                    match BRANCH_CONV {
-                        BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
-                            self.next_basic_block();
-                        }
-                        BranchConv::Direct => {}
-                    }
 
                     let f = wasm_file.functions.get_function_type(function_index, &wasm_file.types);
                     for (idx, ty) in f.returns.iter().enumerate() {
@@ -1145,7 +1077,7 @@ impl FuncBodyStream {
                     ty: entry.target_tys,
                 };
 
-                self.push_instr(Instr::Branch(target));
+                self.set_terminator(Terminator::Branch(target));
 
                 self.bb_index = entry.next_block;
 
@@ -1664,7 +1596,7 @@ impl FuncBodyStream {
                     ty: inputs.clone(),
                 };
 
-                self.push_instr(Instr::BranchIf { t_name: then_target, f_name: else_target, cond: Register::Work(0) });
+                self.set_terminator(Terminator::BranchIf { t_name: then_target, f_name: else_target, cond: Register::Work(0) });
 
                 let entry = ControlFlowEntry {
                     label: Some(Label::new(self.func_idx, next_block)),
@@ -1709,7 +1641,7 @@ impl FuncBodyStream {
                     ty: entry.target_tys.clone(),
                 };
 
-                self.push_instr(Instr::Branch(target));
+                self.set_terminator(Terminator::Branch(target));
 
                 self.bb_index = else_block;
 
@@ -1857,7 +1789,7 @@ impl FuncBodyStream {
                 };
 
                 // Branch to next block
-                self.push_instr(Instr::Branch(target));
+                self.set_terminator(Terminator::Branch(target));
 
                 self.next_basic_block();
 
@@ -1866,7 +1798,7 @@ impl FuncBodyStream {
             Br { relative_depth } => {
                 let target = self.get_target(relative_depth);
 
-                self.push_instr(Instr::Branch(target));
+                self.set_terminator(Terminator::Branch(target));
 
                 self.next_basic_block();
                 self.mark_unreachable();
@@ -1885,7 +1817,7 @@ impl FuncBodyStream {
                     ty: Box::new([]),
                 };
 
-                self.push_instr(Instr::BranchIf { t_name, f_name, cond: reg });
+                self.set_terminator(Terminator::BranchIf { t_name, f_name, cond: reg });
 
                 self.bb_index = next_block;
             }
@@ -1908,7 +1840,7 @@ impl FuncBodyStream {
                     }
                 }
 
-                self.push_instr(Instr::BranchTable { reg, targets, default });
+                self.set_terminator(Terminator::BranchTable { reg, targets, default });
 
                 self.next_basic_block();
                 self.mark_unreachable();
@@ -1970,7 +1902,7 @@ struct ControlFlowEntry {
     outputs: Box<[Type]>,
 }
 
-pub fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
+pub fn compile(file: &WasmFile) -> Vec<MirBasicBlock> {
     let mut basic_blocks = Vec::new();
 
     let mut func_idx = CodeFuncIdx(file.imports.num_funcs() as u32);
@@ -2012,3 +1944,43 @@ pub fn compile(file: &WasmFile) -> Vec<BasicBlock<Instr>> {
     basic_blocks
 }
 
+#[derive(Debug, Clone)]
+pub enum Terminator {
+    Call {
+        func_idx: CodeFuncIdx,
+        return_addr: Label
+    },
+    DynCall {
+        reg: Register,
+        table_index: Option<u32>,
+        return_addr: Label
+    },
+    Branch(BranchTarget),
+    // Index into table, index of table
+    // (None represents the wasmcraft-specific return table)
+    DynBranch(Register, Option<u32>),
+    BranchIf { t_name: BranchTarget, f_name: BranchTarget, cond: Register },
+    BranchTable { reg: Register, targets: Vec<BranchTarget>, default: Option<BranchTarget> },
+    Halt,
+}
+
+#[derive(Debug, Clone)]
+pub struct MirBasicBlock {
+    pub label: Label,
+    /// The operand stack upon entering this basic block
+    pub op_stack: OpStack,
+
+    pub instrs: Vec<Instr>,
+    pub terminator: Terminator,
+}
+
+impl MirBasicBlock {
+    pub fn new(func_idx: CodeFuncIdx, idx: usize, op_stack: OpStack) -> Self {
+        MirBasicBlock {
+            label: Label::new(func_idx, idx),
+            op_stack,
+            instrs: Vec::new(),
+            terminator: Terminator::Halt,
+        }
+    }
+}

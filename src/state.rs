@@ -1,4 +1,5 @@
-use crate::{Axis, BasicBlock, BranchTarget, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue, eval_init_expr};
+use crate::mir::{MirBasicBlock, Terminator};
+use crate::{Axis, BranchTarget, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue, eval_init_expr};
 use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
 use wasmparser::Type;
@@ -101,27 +102,36 @@ impl RegFile<i32> {
 pub(crate) struct Pc(pub Vec<(usize, usize)>);
 
 impl Pc {
-    pub fn jump(&mut self, label: &Label, bbs: &[BasicBlock<Instr>]) {
+    pub fn jump(&mut self, label: &Label, bbs: &[MirBasicBlock]) {
         let pos = (State::get_pc(bbs, label), 0);
         self.jump_to(pos);
     }
 
     pub fn jump_to(&mut self, pos: (usize, usize)) {
         if BRANCH_CONV == BranchConv::Direct {
-            self.incr();
-            self.0.push(pos);
+            self.call_to(pos);
         } else {
             *self.0.last_mut().unwrap() = pos;
         }
+    }
+
+    pub fn call(&mut self, label: &Label, bbs: &[MirBasicBlock]) {
+        let pos = (State::get_pc(bbs, label), 0);
+        self.call_to(pos);
+    }
+
+    pub fn call_to(&mut self, pos: (usize, usize)) {
+        self.incr();
+        self.0.push(pos);
     }
 
     pub fn incr(&mut self) {
         self.0.last_mut().unwrap().1 += 1;
     }
 
-    pub fn unwind(&mut self, bbs: &[BasicBlock<Instr>]) {
+    pub fn unwind(&mut self, bbs: &[MirBasicBlock]) {
         while let Some(last_pc) = self.0.last() {
-            if last_pc.1 == bbs[last_pc.0].instrs.len() {
+            if last_pc.1 == bbs[last_pc.0].instrs.len() + 1 {
                 println!("Popping {:?}", last_pc);
                 self.0.pop();
             } else {
@@ -235,7 +245,7 @@ impl GlobalData {
 pub(crate) struct State {
 	pub pc: Pc,
 
-	pub bbs: Vec<BasicBlock<Instr>>,
+	pub bbs: Vec<MirBasicBlock>,
 
 	frames: Vec<Frame<i32>>,
 
@@ -259,7 +269,7 @@ pub(crate) struct State {
 }
 
 impl State {
-	pub fn new(bbs: Vec<BasicBlock<Instr>>, globals: &GlobalList, mem: &MemoryList, tables: Vec<Table>) -> Self {
+	pub fn new(bbs: Vec<MirBasicBlock>, globals: &GlobalList, mem: &MemoryList, tables: Vec<Table>) -> Self {
         let mut memory = Vec::new();
         for mem in mem.memory.iter() {
             match mem {
@@ -296,7 +306,7 @@ impl State {
 		self.pc = Pc(vec![(idx, 0)]);
     }
 
-    pub fn get_pc(bbs: &[BasicBlock<Instr>], label: &Label) -> usize {
+    pub fn get_pc(bbs: &[MirBasicBlock], label: &Label) -> usize {
         bbs.iter().enumerate().find(|(_, b)| {
             &b.label == label
         }).unwrap_or_else(|| {
@@ -309,7 +319,7 @@ impl State {
         self.pc.0.is_empty()
     }
 
-    fn take_branch(target: &BranchTarget, stack: &mut Stack<i32>, registers: &mut RegFile<i32>, pc: &mut Pc, bbs: &[BasicBlock<Instr>]) {
+    fn take_branch(target: &BranchTarget, stack: &mut Stack<i32>, registers: &mut RegFile<i32>, pc: &mut Pc, bbs: &[MirBasicBlock]) {
         let mut params = Vec::new();
         for ty in target.ty.iter().rev() {
             params.push(stack.pop_ty(*ty));
@@ -350,491 +360,529 @@ impl State {
 
 		let bb = &self.bbs[last_pc.0];
 
-		let instr = &bb.instrs[last_pc.1];
-
-        println!("RUNNING {:?}", instr);
-
-		match instr {
-			PushFrame(l) => {
-				self.frames.push(Frame::new(*l));
-			}
-			PopFrame(l) => {
-				let f = self.frames.pop().unwrap();
-                assert_eq!(f.data.len(), *l as usize);
-			}
-			PushReturnAddress(r) => {
-                let idx = Self::get_pc(&self.bbs, r);
-
-				self.stack.push_i32(idx as i32);
-			}
-            PushI64Const(c) => {
-                self.stack.push_i64(*c);
-            }
-            PushI32Const(c) => {
-                self.stack.push_i32(*c);
-            }
-
-            &Copy { dst, src } => {
-                let v = self.registers.get_half(src)?;
-                self.registers.set_half(dst, v);
-            }
-
-            SetTurtleCoord(r, axis) => {
-                let v = self.registers.get_i32(*r)?;
-                match axis {
-                    Axis::X => self.turtle.0 = v,
-                    Axis::Y => self.turtle.1 = v,
-                    Axis::Z => self.turtle.2 = v,
+        if last_pc.1 == bb.instrs.len() {
+            match &bb.terminator {
+                Terminator::Branch(target) => {
+                    Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
+                    incr_pc = false;
                 }
-            }
-            SetTurtleBlock(r) => {
-                let v = self.registers.get_i32(*r)?;
-                println!("TODO: Set block {} at {:?}", v, self.turtle);
-            }
-            TurtleGet(_r) => todo!(),
-
-            SetLocalPtr(l) => {
-                self.local_ptr = *l;
-            }
-            LoadLocalI64(r) => {
-                let f = self.frames.last().unwrap();
-                let v = f.data[self.local_ptr as usize];
-                println!("Loading {:?}", v);
-                self.registers.set_pair(*r, v);
-            }
-            StoreLocalI64(r) => {
-                let f = self.frames.last_mut().unwrap();
-                let v = self.registers.get_pair(*r)?;
-                println!("Storing {:?}", v);
-                f.data[self.local_ptr as usize] = v;
-            }
-            LoadLocalI32(r) => {
-                let f = self.frames.last().unwrap();
-                let v = f.data[self.local_ptr as usize].0;
-                self.registers.set_i32(*r, v);
-            }
-            StoreLocalI32(r) => {
-                let f = self.frames.last_mut().unwrap();
-                let v = self.registers.get_i32(*r)?;
-                f.data[self.local_ptr as usize].0 = v;
-            }
-
-            &I32MulTo64 { dst, lhs, rhs } => {
-                let l = self.registers.get_half(lhs)? as u32 as u64;
-                let r = self.registers.get_half(rhs)? as u32 as u64;
-                let d = l * r;
-                println!("l: {:#X}, r: {:#X}, d: {:#X}", l, r, d);
-                self.registers.set_i64(dst, d as i64);
-            }
-
-            &I64ExtendI32S { dst, src } => {
-                let v = self.registers.get_i32(src)? as i64;
-                self.registers.set_i64(dst, v);
-            }
-            &I64ExtendI32U(reg) => {
-                let v = self.registers.get_i32(reg)? as u32 as u64 as i64;
-                self.registers.set_i64(reg, v);
-            }
-
-            &I64UComp { dst, lhs, op, rhs } => {
-                let l = self.registers.get_i64(lhs)? as u64;
-                let r = self.registers.get_i64(rhs)? as u64;
-
-                let d = match op {
-                    crate::Relation::LessThan => l < r,
-                    crate::Relation::LessThanEq => l <= r,
-                    crate::Relation::GreaterThan => l > r,
-                    crate::Relation::GreaterThanEq => l >= r,
-                };
-
-                // TODO: This should be a part of the instruction, probably?
-                self.registers.clobber_pair(Register::Work(3));
-                self.registers.clobber_pair(Register::Work(4));
-                self.registers.clobber_pair(Register::Work(5));
-                self.registers.clobber_pair(Register::Work(6));
-
-                println!("l: {:#X}, r: {:#X}", l, r);
-                self.registers.set_i32(dst, d as i32);
-            }
-            &I64SComp { dst, lhs, op, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-
-                let d = match op {
-                    crate::Relation::LessThan => l < r,
-                    crate::Relation::LessThanEq => l <= r,
-                    crate::Relation::GreaterThan => l > r,
-                    crate::Relation::GreaterThanEq => l >= r,
-                };
-
-                println!("l: {:#X}, r: {:#X}", l, r);
-                self.registers.set_i32(dst, d as i32);
-            }
-
-
-            ResetFrames => {
-                todo!()
-            }
-
-            &SetConst(r, v) => {
-                self.registers.set_half(r, v);
-            }
-
-            &SetMemPtr(r) => {
-                let v = self.registers.get_i32(r)?;
-                assert!(v >= 0, "{:?}", v);
-                self.memory_ptr = v as u32;
-            }
-            &StoreI32(r, _a) => {
-                let v = self.registers.get_i32(r)?;
-                let v = v.to_le_bytes();
-
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                page[self.memory_ptr as usize % 65536..][..4].copy_from_slice(&v);
-            }
-            &StoreRow(r) => {
-                let v = self.registers.get_i32(r)?;
-                let v = v.to_le_bytes();
-
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                for i in 0..8 {
-                    page[self.memory_ptr as usize % 65536 + 4 * i..][..4].copy_from_slice(&v);
+                Terminator::Call { func_idx, return_addr: _ } => {
+                    let target = BranchTarget {
+                        label: Label::new(*func_idx, 0),
+                        to_pop: 0,
+                        ty: Box::new([])
+                    };
+                    Self::take_branch(&target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
+                    incr_pc = false;
                 }
-            }
-            &StoreI32_16(r, _a) => {
-                let v = self.registers.get_i32(r)? as u16;
-                let v = v.to_le_bytes();
+                Terminator::BranchIf { t_name, f_name, cond } => {
+                    let c = self.registers.get_i32(*cond)?;
+                    let target = if c != 0 {
+                        t_name
+                    } else {
+                        f_name
+                    };
 
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                page[self.memory_ptr as usize % 65536..][..2].copy_from_slice(&v);
-            }
-            &StoreI32_8(r, _a) => {
-                let v = self.registers.get_i32(r)? as u8;
-                let v = v.to_le_bytes();
+                    Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
+                    incr_pc = false;
+                }
+                Terminator::BranchTable { reg, targets, default } => {
+                    let dest = self.registers.get_i32(*reg)?;
 
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                page[self.memory_ptr as usize % 65536..][..1].copy_from_slice(&v);
-            }
-            &LoadI32(r, _a) => {
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                
-                let v = page[self.memory_ptr as usize % 65536..][..4].try_into().unwrap();
-                let v = i32::from_le_bytes(v);
-                self.registers.set_i32(r, v);
-            }
-            &LoadI32_16S(r, _a) => {
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                
-                let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
-                let v = u16::from_le_bytes(v) as i16 as i32;
-                self.registers.set_i32(r, v);
-            }
-            &LoadI32_16U(r, _a) => {
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                
-                let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
-                let v = u16::from_le_bytes(v) as u32 as i32;
-                self.registers.set_i32(r, v);
-            }
-            &LoadI32_8S(r, _a) => {
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                
-                let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
-                let v = u8::from_le_bytes(v) as i8 as i32;
-                self.registers.set_i32(r, v);
-            }
-            &LoadI32_8U(r, _a) => {
-                let page = &mut self.memory[self.memory_ptr as usize / 65536];
-                
-                let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
-                let v = u8::from_le_bytes(v) as u32 as i32;
-                self.registers.set_i32(r, v);
-            }
-
-
-
-            SetGlobalPtr(v) => {
-                self.global_ptr = *v;
-            }
-            &LoadGlobalI64(r) => {
-                let v = self.globals.get_pair(self.global_ptr as usize);
-                self.registers.set_pair(r, v);
-            }
-            &StoreGlobalI64(r) => {
-                let v = self.registers.get_pair(r)?;
-                self.globals.set_pair(self.global_ptr as usize, v);
-            }
-            &LoadGlobalI32(r) => {
-                let v = self.globals.get_lo(self.global_ptr as usize);
-                self.registers.set_i32(r, v);
-            }
-            &StoreGlobalI32(r) => {
-                let v = self.registers.get_i32(r)?;
-                self.globals.set_lo(self.global_ptr as usize, v);
-            }
-
-            &PushI32From(r) => {
-                let v = self.registers.get_i32(r)?;
-                self.stack.push_i32(v);
-            }
-            &PushI64From(r) => {
-                let v = self.registers.get_i64(r)?;
-                self.stack.push_i64(v);
-            }
-            &PopI32Into(r) => {
-                let v = self.stack.pop_i32();
-
-                self.registers.set_i32(r, v);
-            }
-            &PopI64Into(r) => {
-                let v = self.stack.pop_i64();
-
-                self.registers.set_i64(r, v);
-            }
-
-            Drop => {
-                let _ = self.stack.pop_value();
-            }
-            &SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
-                let c = self.registers.get_i32(cond_reg)?;
-                let t = self.registers.get_i32(true_reg)?;
-                let f = self.registers.get_i32(false_reg)?;
-
-                let result = if c != 0 { t } else { f };
-
-                self.registers.set_i32(dst_reg, result);
-            }
-            &SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
-                let c = self.registers.get_i32(cond_reg)?;
-                let t = self.registers.get_i64(true_reg)?;
-                let f = self.registers.get_i64(false_reg)?;
-
-                let result = if c != 0 { t } else { f };
-
-                self.registers.set_i64(dst_reg, result);
-            }
-            &I64Eq { dst, lhs, invert, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = if invert {
-                    l != r
-                } else {
-                    l == r
-                };
-
-                self.registers.set_i32(dst, d as i32);
-            }
-
-            Branch(target) => {
-                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
-                incr_pc = false;
-            }
-            BranchIf { t_name, f_name, cond } => {
-                let c = self.registers.get_i32(*cond)?;
-                let target = if c != 0 {
-                    t_name
-                } else {
-                    f_name
-                };
-
-                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
-                incr_pc = false;
-            }
-            BranchTable { reg, targets, default } => {
-                let dest = self.registers.get_i32(*reg)?;
-
-                let target = if let Ok(dest) = usize::try_from(dest) {
-                    if let Some(target) = targets.get(dest) {
-                        target
+                    let target = if let Ok(dest) = usize::try_from(dest) {
+                        if let Some(target) = targets.get(dest) {
+                            target
+                        } else if let Some(default) = default {
+                            default
+                        } else {
+                            panic!("Branch out of bounds and no default target: {}", dest);
+                        }
                     } else if let Some(default) = default {
                         default
                     } else {
                         panic!("Branch out of bounds and no default target: {}", dest);
+                    };
+
+                    Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
+                    incr_pc = false;
+                }
+                &Terminator::DynBranch(w, t) => {
+                    let a = self.registers.get_i32(w)?;
+
+                    let dest_idx = if let Some(t) = t {
+                        let table = &self.tables[t as usize];
+
+                        let func_idx = table.elements[a as usize].unwrap();
+
+                        self.bbs.iter().enumerate().find(|(_, bb)| bb.label.func_idx == func_idx).unwrap().0
+                    } else {
+                        if a == -1 {
+                            self.pc.incr();
+                            self.pc.unwind(&self.bbs);
+                            return Ok(true);
+                        }
+
+                        a as usize
+                    };
+
+                    self.pc.jump_to((dest_idx, 0));
+                    incr_pc = false;
+
+                    println!("Branched to {} {:?}", dest_idx, last_pc);
+                }
+                &Terminator::Halt => {}
+
+                t => todo!("{:?}", t)
+            }
+        } else {
+            let instr = &bb.instrs[last_pc.1];
+
+            println!("RUNNING {:?}", instr);
+
+            match instr {
+                PushFrame(l) => {
+                    self.frames.push(Frame::new(*l));
+                }
+                PopFrame(l) => {
+                    let f = self.frames.pop().unwrap();
+                    assert_eq!(f.data.len(), *l as usize);
+                }
+                PushReturnAddress(r) => {
+                    let idx = Self::get_pc(&self.bbs, r);
+
+                    self.stack.push_i32(idx as i32);
+                }
+                PushI64Const(c) => {
+                    self.stack.push_i64(*c);
+                }
+                PushI32Const(c) => {
+                    self.stack.push_i32(*c);
+                }
+
+                Call(idx) => {
+                    let label = Label::new(*idx, 0);
+                    self.pc.call(&label, &self.bbs);
+                    incr_pc = false;
+                },
+                &DynCall(reg, table_idx) => {
+                    let a = self.registers.get_i32(reg)?;
+
+                    let dest_idx = if let Some(t) = table_idx {
+                        let table = &self.tables[t as usize];
+
+                        let func_idx = table.elements[a as usize].unwrap();
+
+                        self.bbs.iter().enumerate().find(|(_, bb)| bb.label.func_idx == func_idx).unwrap().0
+                    } else {
+                        a as usize
+                    };
+
+                    self.pc.call_to((dest_idx, 0));
+                    incr_pc = false;
+                },
+
+                &Copy { dst, src } => {
+                    let v = self.registers.get_half(src)?;
+                    self.registers.set_half(dst, v);
+                }
+
+                SetTurtleCoord(r, axis) => {
+                    let v = self.registers.get_i32(*r)?;
+                    match axis {
+                        Axis::X => self.turtle.0 = v,
+                        Axis::Y => self.turtle.1 = v,
+                        Axis::Z => self.turtle.2 = v,
                     }
-                } else if let Some(default) = default {
-                    default
-                } else {
-                    panic!("Branch out of bounds and no default target: {}", dest);
-                };
-
-                Self::take_branch(target, &mut self.stack, &mut self.registers, &mut self.pc, &self.bbs);
-                incr_pc = false;
-            }
-
-            &I32Ctz(reg) => {
-                let mut val = self.registers.get_i32(reg)?;
-                val = val.trailing_zeros() as i32;
-                self.registers.set_i32(reg, val);
-            }
-            &I32Clz(reg) => {
-                let mut val = self.registers.get_i32(reg)?;
-                val = val.leading_zeros() as i32;
-                self.registers.set_i32(reg, val);
-            }
-            &I64Ctz { dst, src } => {
-                let mut val = self.registers.get_i64(src)?;
-                val = val.trailing_zeros() as i64;
-                self.registers.set_i64(dst, val);
-            }
-            &I64Clz { dst, src } => {
-                let mut val = self.registers.get_i64(src)?;
-                val = val.leading_zeros() as i64;
-                self.registers.set_i64(dst, val);
-            }
-            &I64Add { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.wrapping_add(r);
-                println!("l: {:#X}, r: {:#X}, d: {:#X}", l, r, d);
-                self.registers.set_i64(dst, d);
-            }
-            &I64Shl { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.wrapping_shl(r as u32);
-                self.registers.set_i64(dst, d);
-            }
-            &I64ShrU { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)? as u64;
-                let r = self.registers.get_i64(rhs)? as u64;
-                let d = l.wrapping_shr(r as u32);
-                println!("l, r, d: {} {} {}", l, r, d);
-                self.registers.set_i64(dst, d as i64);
-            }
-            &I64DivU { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)? as u64;
-                let r = self.registers.get_i64(rhs)? as u64;
-                let d = l / r;
-                self.registers.set_i64(dst, d as i64);
-
-                for i in 0..6 {
-                    self.registers.clobber_pair(Register::Work(i));
                 }
-            }
-            &I64DivS { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.wrapping_div(r);
-                self.registers.set_i64(dst, d);
-
-                for i in 0..6 {
-                    self.registers.clobber_pair(Register::Work(i));
+                SetTurtleBlock(r) => {
+                    let v = self.registers.get_i32(*r)?;
+                    println!("TODO: Set block {} at {:?}", v, self.turtle);
                 }
-            }
-            &I64RemS { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.wrapping_rem(r);
-                self.registers.set_i64(dst, d);
+                TurtleGet(_r) => todo!(),
 
-                for i in 0..6 {
-                    self.registers.clobber_pair(Register::Work(i));
+                SetLocalPtr(l) => {
+                    self.local_ptr = *l;
                 }
-            }
-            &I64RemU { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)? as u64;
-                let r = self.registers.get_i64(rhs)? as u64;
-                let d = l % r;
-                self.registers.set_i64(dst, d as i64);
-
-                for i in 0..6 {
-                    self.registers.clobber_pair(Register::Work(i));
+                LoadLocalI64(r) => {
+                    let f = self.frames.last().unwrap();
+                    let v = f.data[self.local_ptr as usize];
+                    println!("Loading {:?}", v);
+                    self.registers.set_pair(*r, v);
                 }
-            }
+                StoreLocalI64(r) => {
+                    let f = self.frames.last_mut().unwrap();
+                    let v = self.registers.get_pair(*r)?;
+                    println!("Storing {:?}", v);
+                    f.data[self.local_ptr as usize] = v;
+                }
+                LoadLocalI32(r) => {
+                    let f = self.frames.last().unwrap();
+                    let v = f.data[self.local_ptr as usize].0;
+                    self.registers.set_i32(*r, v);
+                }
+                StoreLocalI32(r) => {
+                    let f = self.frames.last_mut().unwrap();
+                    let v = self.registers.get_i32(*r)?;
+                    f.data[self.local_ptr as usize].0 = v;
+                }
 
-            &I64Rotl { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.rotate_left((r as u32) % 64);
-                self.registers.set_i64(dst, d);
-               
-            }
-            &I64Rotr { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.rotate_right((r as u32) % 64);
-                self.registers.set_i64(dst, d);
-            }
+                &I32MulTo64 { dst, lhs, rhs } => {
+                    let l = self.registers.get_half(lhs)? as u32 as u64;
+                    let r = self.registers.get_half(rhs)? as u32 as u64;
+                    let d = l * r;
+                    println!("l: {:#X}, r: {:#X}, d: {:#X}", l, r, d);
+                    self.registers.set_i64(dst, d as i64);
+                }
 
-            &I64ShrS { dst, lhs, rhs } => {
-                let l = self.registers.get_i64(lhs)?;
-                let r = self.registers.get_i64(rhs)?;
-                let d = l.wrapping_shr(r as u32);
-                self.registers.set_i64(dst, d);
-            }
-            &I32Op { dst, lhs, op, rhs } => {
-                let l = self.registers.get_half(lhs)?;
-                let r = self.registers.get_half(rhs)?;
+                &I64ExtendI32S { dst, src } => {
+                    let v = self.registers.get_i32(src)? as i64;
+                    self.registers.set_i64(dst, v);
+                }
+                &I64ExtendI32U(reg) => {
+                    let v = self.registers.get_i32(reg)? as u32 as u64 as i64;
+                    self.registers.set_i64(reg, v);
+                }
 
-                let d = eval_i32_op(lhs, rhs, l, op, r, &mut self.registers);
+                &I64UComp { dst, lhs, op, rhs } => {
+                    let l = self.registers.get_i64(lhs)? as u64;
+                    let r = self.registers.get_i64(rhs)? as u64;
 
-                println!("{} {} {}", l, r, d);
+                    let d = match op {
+                        crate::Relation::LessThan => l < r,
+                        crate::Relation::LessThanEq => l <= r,
+                        crate::Relation::GreaterThan => l > r,
+                        crate::Relation::GreaterThanEq => l >= r,
+                    };
 
-                self.registers.set_half(dst, d);
-            }
-            &I32Popcnt(reg) => {
-                let v = self.registers.get_half(reg)?;
-                self.registers.set_half(reg, v.count_ones() as i32);
-            }
-            &I32Extend8S(reg) => {
-                let v = self.registers.get_i32(reg)?;
-                self.registers.set_i32(reg, v as i8 as i32);
-            }
-            &I32Extend16S(reg) => {
-                let v = self.registers.get_i32(reg)?;
-                self.registers.set_i32(reg, v as i16 as i32);
-            }
-            &I32Eqz { val, cond } => {
-                let v = self.registers.get_i32(val)?;
-                let c = (v == 0) as i32;
-                self.registers.set_i32(cond, c);
-            }
-            &I64Eqz { val, cond } => {
-                let v = self.registers.get_i64(val)?;
-                let c = (v == 0) as i32;
-                self.registers.set_i32(cond, c);
-            }
-            &AddI32Const(r, rhs) => {
-                let mut lhs = self.registers.get_half(r)?;
-                lhs = lhs.wrapping_add(rhs);
-                self.registers.set_half(r, lhs);
-            }
+                    // TODO: This should be a part of the instruction, probably?
+                    self.registers.clobber_pair(Register::Work(3));
+                    self.registers.clobber_pair(Register::Work(4));
+                    self.registers.clobber_pair(Register::Work(5));
+                    self.registers.clobber_pair(Register::Work(6));
 
-            &DynBranch(w, t) => {
-                let a = self.registers.get_i32(w)?;
+                    println!("l: {:#X}, r: {:#X}", l, r);
+                    self.registers.set_i32(dst, d as i32);
+                }
+                &I64SComp { dst, lhs, op, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
 
-                let dest_idx = if let Some(t) = t {
-                    let table = &self.tables[t as usize];
+                    let d = match op {
+                        crate::Relation::LessThan => l < r,
+                        crate::Relation::LessThanEq => l <= r,
+                        crate::Relation::GreaterThan => l > r,
+                        crate::Relation::GreaterThanEq => l >= r,
+                    };
 
-                    let func_idx = table.elements[a as usize].unwrap();
+                    println!("l: {:#X}, r: {:#X}", l, r);
+                    self.registers.set_i32(dst, d as i32);
+                }
 
-                    self.bbs.iter().enumerate().find(|(_, bb)| bb.label.func_idx == func_idx).unwrap().0
-                } else {
-                    if a == -1 {
-                        self.pc.incr();
-                        self.pc.unwind(&self.bbs);
-                        return Ok(true);
+
+                ResetFrames => {
+                    todo!()
+                }
+
+                &SetConst(r, v) => {
+                    self.registers.set_half(r, v);
+                }
+
+                &SetMemPtr(r) => {
+                    let v = self.registers.get_i32(r)?;
+                    assert!(v >= 0, "{:?}", v);
+                    self.memory_ptr = v as u32;
+                }
+                &StoreI32(r, _a) => {
+                    let v = self.registers.get_i32(r)?;
+                    let v = v.to_le_bytes();
+
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    page[self.memory_ptr as usize % 65536..][..4].copy_from_slice(&v);
+                }
+                &StoreRow(r) => {
+                    let v = self.registers.get_i32(r)?;
+                    let v = v.to_le_bytes();
+
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    for i in 0..8 {
+                        page[self.memory_ptr as usize % 65536 + 4 * i..][..4].copy_from_slice(&v);
                     }
+                }
+                &StoreI32_16(r, _a) => {
+                    let v = self.registers.get_i32(r)? as u16;
+                    let v = v.to_le_bytes();
 
-                    a as usize
-                };
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    page[self.memory_ptr as usize % 65536..][..2].copy_from_slice(&v);
+                }
+                &StoreI32_8(r, _a) => {
+                    let v = self.registers.get_i32(r)? as u8;
+                    let v = v.to_le_bytes();
 
-                self.pc.jump_to((dest_idx, 0));
-                incr_pc = false;
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    page[self.memory_ptr as usize % 65536..][..1].copy_from_slice(&v);
+                }
+                &LoadI32(r, _a) => {
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    
+                    let v = page[self.memory_ptr as usize % 65536..][..4].try_into().unwrap();
+                    let v = i32::from_le_bytes(v);
+                    self.registers.set_i32(r, v);
+                }
+                &LoadI32_16S(r, _a) => {
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    
+                    let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
+                    let v = u16::from_le_bytes(v) as i16 as i32;
+                    self.registers.set_i32(r, v);
+                }
+                &LoadI32_16U(r, _a) => {
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    
+                    let v = page[self.memory_ptr as usize % 65536..][..2].try_into().unwrap();
+                    let v = u16::from_le_bytes(v) as u32 as i32;
+                    self.registers.set_i32(r, v);
+                }
+                &LoadI32_8S(r, _a) => {
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    
+                    let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
+                    let v = u8::from_le_bytes(v) as i8 as i32;
+                    self.registers.set_i32(r, v);
+                }
+                &LoadI32_8U(r, _a) => {
+                    let page = &mut self.memory[self.memory_ptr as usize / 65536];
+                    
+                    let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
+                    let v = u8::from_le_bytes(v) as u32 as i32;
+                    self.registers.set_i32(r, v);
+                }
 
-                println!("Branched to {} {:?}", dest_idx, last_pc);
+
+
+                SetGlobalPtr(v) => {
+                    self.global_ptr = *v;
+                }
+                &LoadGlobalI64(r) => {
+                    let v = self.globals.get_pair(self.global_ptr as usize);
+                    self.registers.set_pair(r, v);
+                }
+                &StoreGlobalI64(r) => {
+                    let v = self.registers.get_pair(r)?;
+                    self.globals.set_pair(self.global_ptr as usize, v);
+                }
+                &LoadGlobalI32(r) => {
+                    let v = self.globals.get_lo(self.global_ptr as usize);
+                    self.registers.set_i32(r, v);
+                }
+                &StoreGlobalI32(r) => {
+                    let v = self.registers.get_i32(r)?;
+                    self.globals.set_lo(self.global_ptr as usize, v);
+                }
+
+                &PushI32From(r) => {
+                    let v = self.registers.get_i32(r)?;
+                    self.stack.push_i32(v);
+                }
+                &PushI64From(r) => {
+                    let v = self.registers.get_i64(r)?;
+                    self.stack.push_i64(v);
+                }
+                &PopI32Into(r) => {
+                    let v = self.stack.pop_i32();
+
+                    self.registers.set_i32(r, v);
+                }
+                &PopI64Into(r) => {
+                    let v = self.stack.pop_i64();
+
+                    self.registers.set_i64(r, v);
+                }
+
+                Drop => {
+                    let _ = self.stack.pop_value();
+                }
+                &SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
+                    let c = self.registers.get_i32(cond_reg)?;
+                    let t = self.registers.get_i32(true_reg)?;
+                    let f = self.registers.get_i32(false_reg)?;
+
+                    let result = if c != 0 { t } else { f };
+
+                    self.registers.set_i32(dst_reg, result);
+                }
+                &SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => {
+                    let c = self.registers.get_i32(cond_reg)?;
+                    let t = self.registers.get_i64(true_reg)?;
+                    let f = self.registers.get_i64(false_reg)?;
+
+                    let result = if c != 0 { t } else { f };
+
+                    self.registers.set_i64(dst_reg, result);
+                }
+                &I64Eq { dst, lhs, invert, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = if invert {
+                        l != r
+                    } else {
+                        l == r
+                    };
+
+                    self.registers.set_i32(dst, d as i32);
+                }
+
+                &I32Ctz(reg) => {
+                    let mut val = self.registers.get_i32(reg)?;
+                    val = val.trailing_zeros() as i32;
+                    self.registers.set_i32(reg, val);
+                }
+                &I32Clz(reg) => {
+                    let mut val = self.registers.get_i32(reg)?;
+                    val = val.leading_zeros() as i32;
+                    self.registers.set_i32(reg, val);
+                }
+                &I64Ctz { dst, src } => {
+                    let mut val = self.registers.get_i64(src)?;
+                    val = val.trailing_zeros() as i64;
+                    self.registers.set_i64(dst, val);
+                }
+                &I64Clz { dst, src } => {
+                    let mut val = self.registers.get_i64(src)?;
+                    val = val.leading_zeros() as i64;
+                    self.registers.set_i64(dst, val);
+                }
+                &I64Add { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.wrapping_add(r);
+                    println!("l: {:#X}, r: {:#X}, d: {:#X}", l, r, d);
+                    self.registers.set_i64(dst, d);
+                }
+                &I64Shl { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.wrapping_shl(r as u32);
+                    self.registers.set_i64(dst, d);
+                }
+                &I64ShrU { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)? as u64;
+                    let r = self.registers.get_i64(rhs)? as u64;
+                    let d = l.wrapping_shr(r as u32);
+                    println!("l, r, d: {} {} {}", l, r, d);
+                    self.registers.set_i64(dst, d as i64);
+                }
+                &I64DivU { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)? as u64;
+                    let r = self.registers.get_i64(rhs)? as u64;
+                    let d = l / r;
+                    self.registers.set_i64(dst, d as i64);
+
+                    for i in 0..6 {
+                        self.registers.clobber_pair(Register::Work(i));
+                    }
+                }
+                &I64DivS { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.wrapping_div(r);
+                    self.registers.set_i64(dst, d);
+
+                    for i in 0..6 {
+                        self.registers.clobber_pair(Register::Work(i));
+                    }
+                }
+                &I64RemS { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.wrapping_rem(r);
+                    self.registers.set_i64(dst, d);
+
+                    for i in 0..6 {
+                        self.registers.clobber_pair(Register::Work(i));
+                    }
+                }
+                &I64RemU { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)? as u64;
+                    let r = self.registers.get_i64(rhs)? as u64;
+                    let d = l % r;
+                    self.registers.set_i64(dst, d as i64);
+
+                    for i in 0..6 {
+                        self.registers.clobber_pair(Register::Work(i));
+                    }
+                }
+
+                &I64Rotl { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.rotate_left((r as u32) % 64);
+                    self.registers.set_i64(dst, d);
+                
+                }
+                &I64Rotr { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.rotate_right((r as u32) % 64);
+                    self.registers.set_i64(dst, d);
+                }
+
+                &I64ShrS { dst, lhs, rhs } => {
+                    let l = self.registers.get_i64(lhs)?;
+                    let r = self.registers.get_i64(rhs)?;
+                    let d = l.wrapping_shr(r as u32);
+                    self.registers.set_i64(dst, d);
+                }
+                &I32Op { dst, lhs, op, rhs } => {
+                    let l = self.registers.get_half(lhs)?;
+                    let r = self.registers.get_half(rhs)?;
+
+                    let d = eval_i32_op(lhs, rhs, l, op, r, &mut self.registers);
+
+                    println!("{} {} {}", l, r, d);
+
+                    self.registers.set_half(dst, d);
+                }
+                &I32Popcnt(reg) => {
+                    let v = self.registers.get_half(reg)?;
+                    self.registers.set_half(reg, v.count_ones() as i32);
+                }
+                &I32Extend8S(reg) => {
+                    let v = self.registers.get_i32(reg)?;
+                    self.registers.set_i32(reg, v as i8 as i32);
+                }
+                &I32Extend16S(reg) => {
+                    let v = self.registers.get_i32(reg)?;
+                    self.registers.set_i32(reg, v as i16 as i32);
+                }
+                &I32Eqz { val, cond } => {
+                    let v = self.registers.get_i32(val)?;
+                    let c = (v == 0) as i32;
+                    self.registers.set_i32(cond, c);
+                }
+                &I64Eqz { val, cond } => {
+                    let v = self.registers.get_i64(val)?;
+                    let c = (v == 0) as i32;
+                    self.registers.set_i32(cond, c);
+                }
+                &AddI32Const(r, rhs) => {
+                    let mut lhs = self.registers.get_half(r)?;
+                    lhs = lhs.wrapping_add(rhs);
+                    self.registers.set_half(r, lhs);
+                }
+
+
+                Unreachable => {
+                    println!("UNREACHABLE AAAAAA");
+                    return Ok(true);
+                }
+                Comment(_) => {},
+                Tellraw(t) => {
+                    // TODO:
+                    println!("{}", t);
+                }
             }
-
-            Unreachable => {
-                println!("UNREACHABLE AAAAAA");
-                return Ok(true);
-            }
-			Comment(_) => {},
-            Tellraw(t) => {
-                // TODO:
-                println!("{}", t);
-            }
-		}
+        }
 
 		if incr_pc {
             self.pc.incr();
@@ -878,7 +926,7 @@ pub(crate) enum OptAction {
 }
 
 pub(crate) struct ConstProp<'a> {
-    block: &'a BasicBlock<Instr>,
+    block: &'a MirBasicBlock,
 
     globals: Vec<(PropWord, PropWord)>,
 
@@ -903,14 +951,14 @@ fn read(v: StateResult<PropWord>) -> StateResult<PropWord> {
     }
 }
 
-pub(crate) fn get_actions(basic_block: &BasicBlock<Instr>, op_stack: &crate::OpStack) -> Vec<OptAction> {
+pub(crate) fn get_actions(basic_block: &MirBasicBlock, op_stack: &crate::OpStack) -> Vec<OptAction> {
     let mut prop = ConstProp::new(basic_block, op_stack);
     println!("Starting...");
     prop.run();
     prop.actions
 }
 
-pub(crate) fn apply_actions(basic_block: &mut BasicBlock<Instr>, actions: Vec<OptAction>) {
+pub(crate) fn apply_actions(basic_block: &mut MirBasicBlock, actions: Vec<OptAction>) {
     for action in actions {
         match action {
             OptAction::Replace { idx, instr } => {
@@ -921,7 +969,7 @@ pub(crate) fn apply_actions(basic_block: &mut BasicBlock<Instr>, actions: Vec<Op
 }
 
 impl<'a> ConstProp<'a> {
-    pub fn new(block: &'a BasicBlock<Instr>, op_stack: &crate::OpStack) -> Self {
+    pub fn new(block: &'a MirBasicBlock, op_stack: &crate::OpStack) -> Self {
         let mut stack = Stack::new();
         for t in op_stack.0.iter() {
             match t {

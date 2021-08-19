@@ -10,7 +10,7 @@ use datapack_common::functions::command_components::{ScoreHolder, Objective};
 use datapack_common::functions::command_components::FunctionIdent as FunctionId;
 
 use code_emitter::{CodeEmitter, assemble};
-use mir::{Axis, BranchTarget, Instr, Relation, get_next_state, compile};
+use mir::{Axis, BranchTarget, Instr, MirBasicBlock, Relation, compile, get_next_state};
 
 use datapack_vm::interpreter::Interpreter;
 use wasm::{ExportList, GlobalList, MemoryList, WasmFile, parse_wasm_file};
@@ -25,10 +25,10 @@ use state::State;
 use wasmparser::{DataKind, ElementItem, ElementKind, InitExpr, MemoryType, Operator, Type};
 
 /// Represents wasm's "Function Index Space"
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeFuncIdx(u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Label {
 	func_idx: CodeFuncIdx,
 	idx: usize,
@@ -87,7 +87,7 @@ impl<T> BasicBlock<T> {
 //      The last instruction must *not* be followed by a sync point.
 //      Run the CMD to a sync point, because we know the beginning of the target block has one.
 
-impl BasicBlock<Instr> {
+impl MirBasicBlock {
     fn lower(&self, globals: &GlobalList, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>) -> BasicBlock<String> {
         // TODO: Should I use a virtual stack always?
         let instrs = CodeEmitter::emit_all(self, globals, Some(bb_idx), true, insert_sync, state_info);
@@ -108,7 +108,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Direct;
+const BRANCH_CONV: BranchConv = BranchConv::Chain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Half {
@@ -249,7 +249,7 @@ impl RealOpStack {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct OpStack(Vec<Type>);
+pub struct OpStack(Vec<Type>);
 
 impl OpStack {
     pub fn new() -> Self {
@@ -372,13 +372,13 @@ pub struct StateInfo {
 }
 
 impl StateInfo {
-    fn new(basic_block: &BasicBlock<Instr>, entry: RealOpStack) -> Self {
+    fn new(basic_block: &MirBasicBlock, entry: RealOpStack) -> Self {
         let exit = get_next_state(basic_block, entry.clone());
         StateInfo { entry, exit }
     }
 }
 
-fn find_real_stack_sizes(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
+fn find_real_stack_sizes(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
     let mut states = BTreeMap::new();
 
     let entry_state = if BRANCH_CONV == BranchConv::Direct {
@@ -691,7 +691,7 @@ fn link_intrinsics(file: &mut WasmFile) {
     */
 }
 
-fn run_ir(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+fn run_ir(basic_blocks: &[MirBasicBlock], file: &WasmFile) -> State {
     let mut state = setup_state(basic_blocks, file);
 
     loop {
@@ -713,7 +713,7 @@ fn eval_init_expr(expr: InitExpr<'_>) -> i32 {
     }
 }
 
-fn get_tables(file: &WasmFile, basic_blocks: &[BasicBlock<Instr>]) -> Vec<state::Table> {
+fn get_tables(file: &WasmFile, basic_blocks: &[MirBasicBlock]) -> Vec<state::Table> {
     let mut tables = Vec::new();
 
     for table in file.tables.tables.iter() {
@@ -748,7 +748,7 @@ fn get_tables(file: &WasmFile, basic_blocks: &[BasicBlock<Instr>]) -> Vec<state:
     tables
 }
 
-fn prepare_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+fn prepare_state(basic_blocks: &[MirBasicBlock], file: &WasmFile) -> State {
     let tables = get_tables(file, basic_blocks);
 
     let mut state = State::new(basic_blocks.to_owned(), &file.globals, &file.memory, tables);
@@ -779,7 +779,7 @@ fn set_state_pos(state: &mut State, exports: &ExportList, name: &str) {
     state.enter(idx);
 }
 
-fn setup_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
+fn setup_state(basic_blocks: &[MirBasicBlock], file: &WasmFile) -> State {
     let mut state = prepare_state(basic_blocks, file);
 
     set_state_pos(&mut state, &file.exports, "_start");
@@ -796,11 +796,11 @@ fn setup_state(basic_blocks: &[BasicBlock<Instr>], file: &WasmFile) -> State {
 }
 
 struct BBGroupBy<'a> {
-    list: &'a [BasicBlock<Instr>]
+    list: &'a [MirBasicBlock]
 }
 
 impl<'a> Iterator for BBGroupBy<'a> {
-    type Item = &'a [BasicBlock<Instr>];
+    type Item = &'a [MirBasicBlock];
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some((head, tail)) = self.list.split_first() {
@@ -823,7 +823,7 @@ impl<'a> Iterator for BBGroupBy<'a> {
     }
 }
 
-fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
+fn get_stack_states(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
     let mut stack_states = Vec::new();
     
     let iter = BBGroupBy { list: basic_blocks };
@@ -835,7 +835,7 @@ fn get_stack_states(basic_blocks: &[BasicBlock<Instr>]) -> Vec<StateInfo> {
     stack_states
 }
 
-fn optimize_mir(basic_blocks: &mut [BasicBlock<Instr>]) {
+fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
     return;
     
     let stack_states = get_stack_states(basic_blocks);
@@ -1061,7 +1061,7 @@ fn run_and_compare2(mir: &mut State, cmd: &mut Interpreter, return_types: &[Type
         .collect()
 }
 
-fn run_and_compare(basic_blocks: &[BasicBlock<Instr>], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> Vec<WasmValue> {
+fn run_and_compare(basic_blocks: &[MirBasicBlock], mc_functions: &[(String, String)], wasm_file: &WasmFile) -> Vec<WasmValue> {
     let mut mir = setup_state(basic_blocks, wasm_file);
 
     let mut cmd = setup_commands(mc_functions, &wasm_file.globals, &wasm_file.memory, &wasm_file.exports);
@@ -1197,7 +1197,7 @@ mod test {
             R: IntoIterator<Item=I>,
             I: Into<WasmValue>,
     {
-        let mut bb = BasicBlock::new(CodeFuncIdx(0), 0, OpStack::new());
+        let mut bb = MirBasicBlock::new(CodeFuncIdx(0), 0, OpStack::new());
         bb.instrs = program;
 
         let basic_blocks = [bb];
@@ -1580,7 +1580,7 @@ mod test {
     struct TestState<'a> {
         interp: Interpreter,
         state: State,
-        basic_blocks: Vec<BasicBlock<Instr>>,
+        basic_blocks: Vec<MirBasicBlock>,
         mc_functions: Vec<(String, String)>,
         wasm_file: WasmFile<'a>,
     }
@@ -1680,6 +1680,9 @@ mod test {
                         println!("Expected: {:?}", r);
                         panic!();
                     }
+                }
+                SExpr::Node { ref name, .. } if name == "invoke" => {
+                    self.eval_expr(&s);
                 }
                 SExpr::AssertTrap(lhs, error) => {
                     println!("TODO: ASSERT TRAP {:?} {:?}", lhs, error);
