@@ -35,8 +35,6 @@ pub(crate) struct ConstProp<'a> {
     registers: RegFile<PropWord>,
     stack: Stack<PropWord>,
 
-    global_ptr: PropWord,
-
     local_ptr: PropWord,
     locals: Vec<(PropWord, PropWord)>,
 
@@ -68,7 +66,6 @@ impl<'a> ConstProp<'a> {
             block,
             registers: RegFile::new(),
             stack,
-            global_ptr: PropWord::Unknown,
             globals: Vec::new(),
             local_ptr: PropWord::Unknown,
             locals: Vec::new(),
@@ -150,60 +147,6 @@ impl<'a> ConstProp<'a> {
                 let val = read(self.registers.get_half(*src))?;
                 self.registers.set_half(*dst, val);
             },
-
-            Instr::SetGlobalPtr(val) => {
-                self.global_ptr = PropWord::Exact(*val as i32);
-            }
-            Instr::LoadGlobalI32(reg) => {
-                if let PropWord::Exact(ptr) = self.global_ptr {
-                    if self.globals.len() <= ptr as usize {
-                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.registers.set_half(reg.as_lo(), self.globals[ptr as usize].0);
-                } else {
-                    println!("Stopping at LoadGlobalI32");
-                    return Ok(true);
-                }
-            }
-            Instr::StoreGlobalI32(reg) => {
-                if let PropWord::Exact(ptr) = self.global_ptr {
-                    if self.globals.len() <= ptr as usize {
-                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.globals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
-                } else {
-                    // Clobber all of them since we don't know which one is modified
-                    self.globals.clear();
-                }
-            }
-            Instr::LoadGlobalI64(reg) => {
-                if let PropWord::Exact(ptr) = self.global_ptr {
-                    if self.globals.len() <= ptr as usize {
-                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.registers.set_pair(*reg, self.globals[ptr as usize]);
-                } else {
-                    println!("Stopping at LoadGlobalI64");
-                    return Ok(true);
-                }
- 
-            }
-            Instr::StoreGlobalI64(reg) => {
-                if let PropWord::Exact(ptr) = self.global_ptr {
-                    if self.globals.len() <= ptr as usize {
-                        self.globals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.globals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
-                    self.globals[ptr as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
-                } else {
-                    // Clobber all of them since we don't know which one is modified
-                    self.globals.clear();
-                }
-            }
 
             Instr::SetLocalPtr(p) => {
                 self.local_ptr = PropWord::Exact(*p as i32);

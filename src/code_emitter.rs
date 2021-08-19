@@ -1,5 +1,5 @@
 use crate::{BRANCH_CONV, BranchConv, BranchTarget, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_entry_point, get_intrinsic_counts, get_stack_states, get_tables};
-use crate::wasm::{GlobalList, WasmFile};
+use crate::wasm::WasmFile;
 use crate::mir::{FuncBodyStream, Instr, MirBasicBlock, Relation, Terminator};
 use wasmparser::{ExternalKind, Type, TypeOrFuncType};
 
@@ -62,14 +62,14 @@ impl<'a> CodeEmitter<'a> {
         self.body
     }
 
-    pub fn emit_all(basic_block: &MirBasicBlock, global_list: &GlobalList, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
+    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
         println!("\nSTARTING {:?}", basic_block.label);
         println!("{:?}", state_info);
 
         // The real stack has 1 entry: the return address
         let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()));
         for i in basic_block.instrs.iter() {
-            emitter.emit(i, global_list);
+            emitter.emit(i);
         }
         emitter.emit_terminator(&basic_block.terminator);
         emitter.finalize()
@@ -95,12 +95,12 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
-    pub fn emit(&mut self, instr: &Instr, global_list: &GlobalList) {
+    pub fn emit(&mut self, instr: &Instr) {
         println!("Emitting {:?}", instr);
         
         self.body.push(format!("# {:?}", instr));
 
-        self.emit_inner(instr, global_list);
+        self.emit_inner(instr);
 
         self.emit_sync();
     }
@@ -152,7 +152,7 @@ impl<'a> CodeEmitter<'a> {
         self.emit_sync();
     }
 
-    pub fn emit_inner(&mut self, instr: &Instr, global_list: &GlobalList) {
+    pub fn emit_inner(&mut self, instr: &Instr) {
         let blocks = [
             "minecraft:air",
             "minecraft:cobblestone",
@@ -216,11 +216,6 @@ impl<'a> CodeEmitter<'a> {
                 self.body.push(format!("scoreboard players operation %ptr reg = {} reg", reg.get_lo()));
                 self.body.push("function intrinsic:setptr".to_string());
             }
-            &SetGlobalPtr(global_index) => {
-                let pos = global_list.get_offset(global_index);
-                self.body.push(format!("execute as @e[tag=globalptr] run tp @s {}", pos));
-            }
-
             &PopI32Into(reg) => {           
                 self.emit_pop_i32_into(reg);
             }
@@ -588,22 +583,6 @@ impl<'a> CodeEmitter<'a> {
 
                 // TODO: ????
                 //self.op_stack.push_i32();
-            }
-
-
-            LoadGlobalI64(reg) => {
-                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
-            }
-            LoadGlobalI32(reg) => {
-                self.body.push(format!("execute at @e[tag=globalptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-            }
-            StoreGlobalI64(reg) => {
-                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
-            }
-            StoreGlobalI32(reg) => {
-                self.body.push(format!("execute at @e[tag=globalptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
             }
 
             &LoadI32(dst, _align) => {
@@ -1290,7 +1269,7 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
     println!("Done getting stack states");
 
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
-        let mut new_block = bb.lower(&file.globals, bb_idx, insert_sync, Some(&stack_states[bb_idx]));
+        let mut new_block = bb.lower(bb_idx, insert_sync, Some(&stack_states[bb_idx]));
         let name = get_block_name(&new_block.label);
 
         //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
@@ -1491,7 +1470,6 @@ fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile) -> 
     kill @e[tag=localptr]\n\
     kill @e[tag=frameptr]\n\
     kill @e[tag=stackptr]\n\
-    kill @e[tag=globalptr]\n\
     kill @e[tag=turtle]\n\
     kill @e[tag=nextchain]\n\
     \n\
@@ -1500,7 +1478,6 @@ fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile) -> 
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
-    summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 1 1 -1 {Marker:1b,Tags:[\"nextchain\"],CustomName:'\"nextchain\"',CustomNameVisible:1b}\n\
     
@@ -1631,7 +1608,7 @@ fn create_caller_function(mc_functions: &[(String, String)], index: CodeFuncIdx,
 
     //assert_eq!(f.basic_blocks.len(), 1);
 
-    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], &file.globals, None, false, false, None);
+    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None);
 
     let pos = block_pos_from_idx(idx, true);
 

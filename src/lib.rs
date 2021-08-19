@@ -89,9 +89,9 @@ impl<T> BasicBlock<T> {
 //      Run the CMD to a sync point, because we know the beginning of the target block has one.
 
 impl MirBasicBlock {
-    fn lower(&self, globals: &GlobalList, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>) -> BasicBlock<String> {
+    fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>) -> BasicBlock<String> {
         // TODO: Should I use a virtual stack always?
-        let instrs = CodeEmitter::emit_all(self, globals, Some(bb_idx), true, insert_sync, state_info);
+        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info);
 
         BasicBlock {
             op_stack: self.op_stack.clone(),
@@ -293,6 +293,7 @@ pub enum Register {
     Param(u32),
     Return(u32),
     Stack(u32),
+    Global(u32),
 }
 
 impl Register {
@@ -318,6 +319,9 @@ impl Register {
             Register::Stack(i) => {
                 format!("%stack%{}%lo", i)
             }
+            Register::Global(i) => {
+                format!("%global%{}%lo", i)
+            }
         }
     }
 
@@ -334,6 +338,9 @@ impl Register {
             }
             Register::Stack(i) => {
                 format!("%stack%{}%hi", i)
+            }
+            Register::Global(i) => {
+                format!("%global%{}%hi", i)
             }
         }
     }
@@ -839,6 +846,8 @@ fn get_stack_states(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
 }
 
 fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
+    return;
+
     let stack_states = get_stack_states(basic_blocks);
 
     for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {

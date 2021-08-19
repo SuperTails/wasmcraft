@@ -1,8 +1,5 @@
-use wasmparser::{
-	Data, DataKind, Element, Export, FuncType, Global, Import, ImportSectionEntryType, MemoryType,
-    Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType
-};
-use crate::{BlockPos, CodeFuncIdx, eval_init_expr};
+use wasmparser::{Data, DataKind, Element, Export, FuncType, Global, GlobalType, Import, ImportSectionEntryType, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
+use crate::{BlockPos, CodeFuncIdx, Register, eval_init_expr};
 use std::convert::TryInto;
 
 pub struct DataList<'a> {
@@ -110,19 +107,18 @@ impl<'a> GlobalList<'a> {
         self.globals.push(global);
     }
 
-    pub fn get_offset(&self, idx: u32) -> BlockPos {
-        BlockPos { x: idx as i32 * 2, y: 0, z: 3 }
-    }
-
     pub fn init(&self) -> Vec<String> {
         let mut cmds = Vec::new();
 
-        cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:air replace", self.globals.len()));
-        cmds.push(format!("fill 0 0 3 {} 0 4 minecraft:jukebox{{RecordItem:{{id:\"minecraft:stone\",Count:1b,tag:{{Memory:0}}}}}} replace", self.globals.len()));
-
         for (i, global) in self.globals.iter().enumerate() {
+            let reg = Register::Global(i as u32).as_lo();
             let value = eval_init_expr(global.init_expr);
-            cmds.push(format!("data modify block {} 0 3 RecordItem.tag.Memory set value {}", i, value));
+
+            if !matches!(global.ty, GlobalType { content_type: Type::I32, mutable: _ }) {
+                todo!()
+            }
+
+            cmds.push(format!("scoreboard players set {} reg {}", reg, value));
         }
 
         cmds

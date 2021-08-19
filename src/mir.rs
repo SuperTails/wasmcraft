@@ -77,11 +77,6 @@ pub enum Instr {
     PopI32Into(Register),
     PopI64Into(Register),
 
-    LoadGlobalI32(Register),
-    StoreGlobalI32(Register),
-    LoadGlobalI64(Register),
-    StoreGlobalI64(Register),
-
     LoadLocalI32(Register),
     StoreLocalI32(Register),
     LoadLocalI64(Register),
@@ -112,7 +107,6 @@ pub enum Instr {
     I64Eqz { val: Register, cond: Register },
 
     SetMemPtr(Register),
-    SetGlobalPtr(u32),
     SetLocalPtr(u32),
 
     ResetFrames,
@@ -155,22 +149,6 @@ impl Instr {
         match ty {
             Type::I32 => Instr::LoadLocalI32(reg),
             Type::I64 => Instr::LoadLocalI64(reg),
-            _ => todo!("{:?}", ty)
-        }
-    }
-
-    pub fn store_global(reg: Register, ty: Type) -> Self {
-        match ty {
-            Type::I32 => Instr::StoreGlobalI32(reg),
-            Type::I64 => Instr::StoreGlobalI64(reg),
-            _ => todo!("{:?}", ty)
-        }
-    }
-
-    pub fn load_global(reg: Register, ty: Type) -> Self {
-        match ty {
-            Type::I32 => Instr::LoadGlobalI32(reg),
-            Type::I64 => Instr::LoadGlobalI64(reg),
             _ => todo!("{:?}", ty)
         }
     }
@@ -906,27 +884,16 @@ impl FuncBodyStream {
             }
 
             GlobalGet { global_index } => { 
-                self.push_instr(Instr::SetGlobalPtr(global_index));
-
-                let reg = Register::Work(0);
-                // FIXME:
                 let ty = wasm_file.globals.globals[global_index as usize].ty.content_type;
 
-                self.push_instr(Instr::load_global(reg, ty));
-                self.push_instr(Instr::push_from(reg, ty));
+                self.push_instr(Instr::push_from(Register::Global(global_index), ty));
                 self.op_stack.push_ty(ty);
             }
             GlobalSet { global_index } => {
-                let reg = Register::Work(0);
-                // FIXME:
                 let ty = wasm_file.globals.globals[global_index as usize].ty.content_type;
 
-                self.push_instr(Instr::SetGlobalPtr(global_index));
-
-                self.push_instr(Instr::pop_into(reg, ty));
+                self.push_instr(Instr::pop_into(Register::Global(global_index), ty));
                 self.op_stack.pop_ty(ty);
-
-                self.push_instr(Instr::store_global(reg, ty));
             }
 
             LocalSet { local_index } => {

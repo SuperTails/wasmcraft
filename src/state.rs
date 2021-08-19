@@ -215,36 +215,6 @@ impl Stack<i32> {
     }
 }
 
-struct GlobalData(Vec<(i32, i32)>);
-
-impl GlobalData {
-    pub fn new(global_list: &GlobalList) -> Self {
-        let mut data = GlobalData(vec![(0, 0); global_list.globals.len()]);
-
-        for (i, global) in global_list.globals.iter().enumerate() {
-            data.set_lo(i, eval_init_expr(global.init_expr));
-        }
-
-        data
-    }
-
-    pub fn get_pair(&self, index: usize) -> (i32, i32) {
-        self.0[index]
-    }
-
-    pub fn get_lo(&self, index: usize) -> i32 {
-        self.get_pair(index).0
-    }
-
-    pub fn set_pair(&mut self, index: usize, value: (i32, i32)) {
-        self.0[index] = value;
-    }
-
-    pub fn set_lo(&mut self, index: usize, value: i32) {
-        self.0[index].0 = value;
-    }
-}
-
 pub(crate) struct State {
 	pub pc: Pc,
 
@@ -259,10 +229,6 @@ pub(crate) struct State {
     pub memory: Vec<[u8; 65536]>,
 
     pub registers: RegFile<i32>,
-
-    globals: GlobalData,
-
-    global_ptr: u32,
 
     local_ptr: u32,
 
@@ -287,15 +253,21 @@ impl State {
             }
         }
 
+        let mut registers = RegFile::new();
+
+        for (i, global) in globals.globals.iter().enumerate() {
+            let reg = Register::Global(i as u32).as_lo();
+            let val = eval_init_expr(global.init_expr);
+            registers.set_half(reg, val);
+        }
+
 		State {
 			bbs,
 			pc: Pc(vec![(0, 0)]),
 			frames: Vec::new(),
 			stack: Stack::new(),
-            registers: RegFile::new(),
-            globals: GlobalData::new(globals),
+            registers,
             local_ptr: 0,
-            global_ptr: 0,
             memory_ptr: 0,
             memory,
             turtle: (0, 0, 0),
@@ -659,28 +631,6 @@ impl State {
                     let v = page[self.memory_ptr as usize % 65536..][..1].try_into().unwrap();
                     let v = u8::from_le_bytes(v) as u32 as i32;
                     self.registers.set_i32(r, v);
-                }
-
-
-
-                SetGlobalPtr(v) => {
-                    self.global_ptr = *v;
-                }
-                &LoadGlobalI64(r) => {
-                    let v = self.globals.get_pair(self.global_ptr as usize);
-                    self.registers.set_pair(r, v);
-                }
-                &StoreGlobalI64(r) => {
-                    let v = self.registers.get_pair(r)?;
-                    self.globals.set_pair(self.global_ptr as usize, v);
-                }
-                &LoadGlobalI32(r) => {
-                    let v = self.globals.get_lo(self.global_ptr as usize);
-                    self.registers.set_i32(r, v);
-                }
-                &StoreGlobalI32(r) => {
-                    let v = self.registers.get_i32(r)?;
-                    self.globals.set_lo(self.global_ptr as usize, v);
                 }
 
                 &PushI32From(r) => {
