@@ -736,6 +736,7 @@ impl FuncBodyStream {
                     table_index: Some(table_index),
                     return_addr,
                 });
+
                 self.next_basic_block();
             }
             BranchConv::Direct => {
@@ -846,22 +847,12 @@ impl FuncBodyStream {
 
                 self.dyn_call(table_index, ty);
 
-                match BRANCH_CONV {
-                    BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
-                        self.next_basic_block();
-                    }
-                    BranchConv::Direct => {}
-                }
-
                 for (idx, ty) in ty.returns.iter().enumerate() {
                     self.push_instr(Instr::push_from(Register::Return(idx as u32), *ty));
                     self.op_stack.push_ty(*ty);
                 }
-
-                //self.basic_blocks.push(BasicBlock::new(self.basic_blocks.len()));
             }
             Return => {
-
                 /*
                 for l in 0..local_count {
                     let reg = Register::Work(l);

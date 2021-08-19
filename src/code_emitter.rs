@@ -201,6 +201,8 @@ impl<'a> CodeEmitter<'a> {
             }
 
             Call(i) => {
+                self.emit_stack_save();
+
                 let name = get_entry_point(*i);
                 self.body.push(format!("function wasm:{}", name));
             }
