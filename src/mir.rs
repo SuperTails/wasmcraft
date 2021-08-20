@@ -119,6 +119,13 @@ impl InstrUses {
     {
         Self::some(data.into_iter().flat_map(|(r, u)| [(r.as_lo(), u), (r.as_hi(), u)]))
     }
+
+    pub fn get(&self, reg: HalfRegister) -> Option<Usage> {
+        match self {
+            InstrUses::All(u) => Some(*u),
+            InstrUses::Some(map) => map.get(&reg).copied(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

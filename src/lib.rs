@@ -863,6 +863,10 @@ fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
 
         state::apply_actions(bb, actions);
 
+        let actions = state::dead_writes::get_actions(bb);
+        
+        state::apply_actions(bb, actions);
+
         if prev_size != bb.instrs.len() {
             println!("{} -> {}", prev_size, bb.instrs.len());
         }
