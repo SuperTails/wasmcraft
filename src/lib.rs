@@ -10,7 +10,7 @@ use datapack_common::functions::{Command, Function};
 use datapack_common::functions::command_components::{ScoreHolder, Objective};
 use datapack_common::functions::command_components::FunctionIdent as FunctionId;
 
-use code_emitter::{CodeEmitter, assemble};
+use code_emitter::{CodeEmitter, ConstantPool, assemble};
 use mir::{Axis, BranchTarget, Instr, MirBasicBlock, Relation, compile, get_next_state};
 
 use datapack_vm::interpreter::Interpreter;
@@ -89,9 +89,9 @@ impl<T> BasicBlock<T> {
 //      Run the CMD to a sync point, because we know the beginning of the target block has one.
 
 impl MirBasicBlock {
-    fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>) -> BasicBlock<String> {
+    fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>, pool: &mut ConstantPool) -> BasicBlock<String> {
         // TODO: Should I use a virtual stack always?
-        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info);
+        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info, pool);
 
         BasicBlock {
             op_stack: self.op_stack.clone(),
@@ -109,7 +109,7 @@ enum BranchConv {
     Direct,
 }
 
-const BRANCH_CONV: BranchConv = BranchConv::Direct;
+const BRANCH_CONV: BranchConv = BranchConv::Chain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Half {
@@ -853,6 +853,8 @@ fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
             continue;
         }
 
+        let prev_size = bb.instrs.len();
+
         let actions = state::const_prop::get_actions(bb, &state.entry.stack);
 
         state::apply_actions(bb, actions);
@@ -860,6 +862,10 @@ fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
         let actions = state::stack_drops::get_actions(bb, &state.entry.stack);
 
         state::apply_actions(bb, actions);
+
+        if prev_size != bb.instrs.len() {
+            println!("{} -> {}", prev_size, bb.instrs.len());
+        }
     }
 
     println!("Done optimizing");
@@ -1544,7 +1550,7 @@ mod test {
             Instr::SetLocalPtr(1),
             Instr::LoadLocalI32(Register::Work(1)),
 
-            Instr::I32Op { dst: Register::Work(2).as_lo(), lhs: Register::Work(0).as_lo(), op: "/=", rhs: Register::Work(1).as_lo() },
+            Instr::I32Op { dst: Register::Work(2).as_lo(), lhs: Register::Work(0).as_lo(), op: "/=", rhs: Register::Work(1).as_lo().into() },
 
             Instr::PushI32From(Register::Work(2)),
             Instr::PopI32Into(Register::Return(0)),

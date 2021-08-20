@@ -1,7 +1,38 @@
+use std::collections::BTreeSet;
+
 use crate::{BRANCH_CONV, BranchConv, BranchTarget, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_entry_point, get_intrinsic_counts, get_stack_states, get_tables};
 use crate::wasm::WasmFile;
-use crate::mir::{FuncBodyStream, Instr, MirBasicBlock, Relation, Terminator};
+use crate::mir::{FuncBodyStream, Instr, MirBasicBlock, RegOrConst, Relation, Terminator};
 use wasmparser::{ExternalKind, Type, TypeOrFuncType};
+
+pub struct ConstantPool(BTreeSet<i32>);
+
+impl ConstantPool {
+    pub fn new() -> Self {
+        ConstantPool(BTreeSet::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn init_cmds(mut self) -> Vec<String> {
+        self.0.insert(-1);
+        self.0.insert(0);
+        for i in 0..32 {
+            self.0.insert(1 << i);
+        }
+
+        let mut result = vec!["scoreboard players set %%SIXTEEN reg 16".to_string()];
+
+        for value in self.0 {
+            result.push(format!("scoreboard players set %%{} reg {}", value, value));
+        }
+
+        result
+    }
+}
+
 
 pub struct CodeEmitter<'a> {
     pub body: Vec<String>,
@@ -17,10 +48,12 @@ pub struct CodeEmitter<'a> {
     sync_instr_idx: usize,
 
     state_info: Option<&'a StateInfo>,
+
+    constant_pool: &'a mut ConstantPool,
 }
 
 impl<'a> CodeEmitter<'a> {
-    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>) -> Self {
+    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>, constant_pool: &'a mut ConstantPool) -> Self {
         if bb_idx.is_none() {
             assert!(!use_virt_stack);
             assert!(!insert_sync);
@@ -43,6 +76,7 @@ impl<'a> CodeEmitter<'a> {
             insert_sync,
             state_info,
             label,
+            constant_pool
         };
         
         emitter.emit_sync();
@@ -62,12 +96,12 @@ impl<'a> CodeEmitter<'a> {
         self.body
     }
 
-    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>) -> Vec<String> {
+    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, constant_pool: &'a mut ConstantPool) -> Vec<String> {
         println!("\nSTARTING {:?}", basic_block.label);
         println!("{:?}", state_info);
 
         // The real stack has 1 entry: the return address
-        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()));
+        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()), constant_pool);
         for i in basic_block.instrs.iter() {
             emitter.emit(i);
         }
@@ -96,7 +130,7 @@ impl<'a> CodeEmitter<'a> {
     }
 
     pub fn emit(&mut self, instr: &Instr) {
-        println!("Emitting {:?}", instr);
+        //println!("Emitting {:?}", instr);
         
         self.body.push(format!("# {:?}", instr));
 
@@ -443,10 +477,10 @@ impl<'a> CodeEmitter<'a> {
 
                 let lo_is_lesser = Register::Work(6).as_lo();
 
-                self.make_i32_op(lhs.as_hi(), "ltu", rhs.as_hi(), hi_is_lesser);
-                self.make_i32_op(lhs.as_hi(), "gtu", rhs.as_hi(), hi_is_greater);
-                self.make_i32_op(lhs.as_hi(), "==", rhs.as_hi(), hi_is_equal);
-                self.make_i32_op(lhs.as_lo(), "ltu", rhs.as_lo(), lo_is_lesser);
+                self.make_i32_op(lhs.as_hi(), "ltu", rhs.as_hi().into(), hi_is_lesser);
+                self.make_i32_op(lhs.as_hi(), "gtu", rhs.as_hi().into(), hi_is_greater);
+                self.make_i32_op(lhs.as_hi(), "==", rhs.as_hi().into(), hi_is_equal);
+                self.make_i32_op(lhs.as_lo(), "ltu", rhs.as_lo().into(), lo_is_lesser);
 
                 self.body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 1", hi_is_lesser, dst.as_lo()));
                 self.body.push(format!("execute if score {} reg matches 1.. run scoreboard players set {} reg 0", hi_is_greater, dst.as_lo()));
@@ -500,7 +534,7 @@ impl<'a> CodeEmitter<'a> {
                 };
 
                 // dst = (lhs_lo as u32) < (rhs_lo as u32);
-                self.make_i32_op(lhs.as_lo(), op, rhs.as_lo(), dst.as_lo());
+                self.make_i32_op(lhs.as_lo(), op, rhs.as_lo().into(), dst.as_lo());
                 // if lhs_hi < rhs_hi { dst = true }
                 self.body.push(format!("execute if score {} reg < {} reg run scoreboard players set {} reg 1", lhs.as_hi(), rhs.as_hi(), dst.as_lo()));
                 // if lhs_hi > rhs_hi { dst = false }
@@ -872,16 +906,25 @@ impl<'a> CodeEmitter<'a> {
         body.push("scoreboard players remove %stackptr wasm 2".to_string());
     }
 
-    pub fn make_i32_op(&mut self, mut lhs: HalfRegister, mut op: &str, mut rhs: HalfRegister, dst: HalfRegister) {
+    pub fn make_i32_op(&mut self, lhs: HalfRegister, mut op: &str, mut rhs: RegOrConst, dst: HalfRegister) {
+        if let RegOrConst::Const(c) = rhs {
+            self.constant_pool.0.insert(c);
+        }
+
         match op {
             "+=" | "-=" | "*=" | "%=" => {
                 self.body.push(format!("scoreboard players operation {} reg {} {} reg", lhs, op, rhs));
                 assert_eq!(lhs, dst);
             }
             "/=" => {
-                // Minecraft division always rounds towards negative infinity, so we need to correct for that
                 assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
+                if let RegOrConst::Reg(r) = rhs {
+                    assert_ne!(r, dst);
+                } else {
+                    panic!()
+                }
+
+                // Minecraft division always rounds towards negative infinity, so we need to correct for that
 
                 let rem = Register::Work(21).as_lo();
 
@@ -904,7 +947,9 @@ impl<'a> CodeEmitter<'a> {
                 let lhs_lo = Register::Work(36).as_lo();
 
                 assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
+                if let RegOrConst::Reg(r) = rhs {
+                    assert_ne!(r, dst);
+                }
 
                 // let mut dst = 0;
                 self.body.push(format!("scoreboard players set {} reg 0", dst));
@@ -954,7 +999,9 @@ impl<'a> CodeEmitter<'a> {
             }
             "remu" => {
                 assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
+                if let RegOrConst::Reg(r) = rhs {
+                    assert_ne!(r, dst);
+                }
 
                 self.make_i32_op(lhs, "/=u", rhs, dst);
 
@@ -966,7 +1013,9 @@ impl<'a> CodeEmitter<'a> {
             }
             "rems" => {
                 assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
+                if let RegOrConst::Reg(r) = rhs {
+                    assert_ne!(r, dst);
+                }
 
                 self.make_i32_op(lhs, "/=", rhs, dst);
 
@@ -1010,19 +1059,43 @@ impl<'a> CodeEmitter<'a> {
                 self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
             }
             "shrs" => {
-                assert_ne!(dst, rhs);
+                match rhs {
+                    RegOrConst::Reg(r) => {
+                        assert_ne!(r, dst);
 
-                self.body.push(format!("scoreboard players operation {} reg %= %%32 reg", rhs));
+                        self.body.push(format!("scoreboard players operation {} reg %= %%32 reg", rhs));
 
-                if dst != lhs {
-                    self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                        if dst != lhs {
+                            self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                        }
+
+                        for i in 1..31 {
+                            self.body.push(format!("execute if score {} reg matches {}..{} run scoreboard players operation {} reg /= %%{} reg", rhs, i, i, dst, 1 << i))
+                        }
+                        self.body.push(format!("execute if score {} reg matches 31..31 run execute store success score {} reg if score {} reg matches ..-1", rhs, dst, dst));
+                        self.body.push(format!("execute if score {} reg matches 31..31 run scoreboard players operation {} reg *= %%-1 reg", rhs, dst));
+                    }
+                    RegOrConst::Const(rhs) => {
+                        let rhs = rhs % 32;
+
+                        if dst != lhs {
+                            self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                        }
+
+                        use std::cmp::Ordering;
+
+                        match rhs.cmp(&31) {
+                            Ordering::Less => {
+                                self.body.push(format!("scoreboard players operation {} reg /= %%{} reg", dst, 1 << rhs));
+                            }
+                            Ordering::Equal => {
+                                self.body.push(format!("execute store success score {} reg if score {} reg matches ..-1", dst, dst));
+                                self.body.push(format!("scoreboard players operation {} reg *= %%-1 reg", dst));
+                            }
+                            Ordering::Greater => unreachable!(),
+                        }
+                    }
                 }
-
-                for i in 1..31 {
-                    self.body.push(format!("execute if score {} reg matches {}..{} run scoreboard players operation {} reg /= %%{} reg", rhs, i, i, dst, 1 << i))
-                }
-                self.body.push(format!("execute if score {} reg matches 31..31 run execute store success score {} reg if score {} reg matches ..-1", rhs, dst, dst));
-                self.body.push(format!("execute if score {} reg matches 31..31 run scoreboard players operation {} reg *= %%-1 reg", rhs, dst));
             }
             "rotl" => {
                 self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
@@ -1056,6 +1129,8 @@ impl<'a> CodeEmitter<'a> {
                 self.body.push(format!("execute store success score {} reg unless score {} reg = {} reg", dst, lhs, rhs));
             }
             "geu" | "gtu" | "leu" | "ltu" => {
+                let mut lhs = RegOrConst::Reg(lhs);
+
                 if op == "geu" {
                     op = "leu";
                     std::mem::swap(&mut lhs, &mut rhs);
@@ -1078,8 +1153,12 @@ impl<'a> CodeEmitter<'a> {
                     if lhs >= 0 && rhs >= 0 && lhs < rhs { reg = true }
                 */
 
-                assert_ne!(lhs, dst);
-                assert_ne!(rhs, dst);
+                if let RegOrConst::Reg(l) = lhs {
+                    assert_ne!(l, dst);
+                }
+                if let RegOrConst::Reg(r) = rhs {
+                    assert_ne!(r, dst);
+                }
 
                 self.body.push(format!("scoreboard players set {} reg 0", dst));
                 self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. run scoreboard players set {} reg 0", lhs, rhs, dst));
@@ -1270,8 +1349,10 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
 
     println!("Done getting stack states");
 
+    let mut pool = ConstantPool::new();
+
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
-        let mut new_block = bb.lower(bb_idx, insert_sync, Some(&stack_states[bb_idx]));
+        let mut new_block = bb.lower(bb_idx, insert_sync, Some(&stack_states[bb_idx]), &mut pool);
         let name = get_block_name(&new_block.label);
 
         //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
@@ -1289,11 +1370,11 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
         mc_functions.push((name, contents));
     }
 
+    let setup = create_setup_function(&mc_functions, file, pool);
+    mc_functions.push(("setup".to_string(), setup));
+
     let dyn_branch = create_return_jumper(basic_blocks);
     mc_functions.push(("dyn_branch".to_string(), dyn_branch));
-
-    let setup = create_setup_function(&mc_functions, file);
-    mc_functions.push(("setup".to_string(), setup));
 
     if BRANCH_CONV == BranchConv::Chain {
         let setup_chain = create_chain_setup_function();
@@ -1306,8 +1387,6 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
         mc_functions.push((format!("dyn_branch{}", idx), dyn_branch));
     }
 
-    do_fixups(&mut mc_functions);
-
     for export in file.exports.exports.iter() {
         if let ExternalKind::Function = export.kind {
             let index = CodeFuncIdx(export.index);
@@ -1318,6 +1397,7 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
         }
     }
 
+    do_fixups(&mut mc_functions);
 
     mc_functions
 }
@@ -1333,9 +1413,13 @@ fn create_return_jumper(basic_blocks: &[MirBasicBlock]) -> String {
     
     let targets = targets.iter().map(Some);
 
-    let mut emitter = CodeEmitter::new(None, false, false, None, None);
+    let mut pool = ConstantPool::new();
+
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
     emitter.lower_branch_table(Register::Work(0), targets, None);
     let dyn_branch = emitter.finalize();
+
+    assert!(pool.is_empty());
 
     dyn_branch.join("\n")
 }
@@ -1353,9 +1437,13 @@ fn create_dyn_jumper(table: &crate::state::Table) -> String {
 
     let targets = targets.iter().map(|t| t.as_ref());
 
-    let mut emitter = CodeEmitter::new(None, false, false, None, None);
+    let mut pool = ConstantPool::new();
+
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
     emitter.lower_branch_table(Register::Work(0), targets, None);
     let dyn_branch = emitter.finalize();
+
+    assert!(pool.is_empty());
     
     dyn_branch.join("\n")
 }
@@ -1457,7 +1545,7 @@ fn block_pos_from_idx(idx: usize, redstone: bool) -> String {
     format!("{} {} {}", x, y, z)
 }
 
-fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile) -> String {
+fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile, pool: ConstantPool) -> String {
     let mut setup = "\
     # Set up scoreboard\n\
     scoreboard objectives remove wasm\n\
@@ -1485,24 +1573,14 @@ fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile) -> 
     
     scoreboard players set %stackptr wasm 0
     scoreboard players set %frameptr wasm 0
-    
-    scoreboard players set %%-1 reg -1
-    scoreboard players set %%0 reg 0
-    scoreboard players set %%1 reg 1
-    scoreboard players set %%2 reg 2
-    scoreboard players set %%4 reg 4
-    scoreboard players set %%8 reg 8
-    scoreboard players set %%16 reg 16
-    scoreboard players set %%32 reg 32
-    scoreboard players set %%64 reg 64
-    scoreboard players set %%SIXTEEN reg 16
-    scoreboard players set %%256 reg 256
-    scoreboard players set %%65536 reg 65536
-    scoreboard players set %%16777216 reg 16777216 
-    scoreboard players set %%1073741824 reg 1073741824
-    scoreboard players set %%-2147483648 reg -2147483648
     ".to_string();
 
+    setup.push_str("\n# Make constants\n");
+    for line in pool.init_cmds() {
+       setup.push_str(&line);
+       setup.push('\n');
+    }
+    
     setup.push_str("\n# Make stack\n");
     setup.push_str("fill 0 0 0 50 0 0 minecraft:air replace\n");
     setup.push_str("fill 0 0 0 50 0 0 minecraft:jukebox{RecordItem:{id:\"minecraft:stone\",Count:1b,tag:{Memory:0}}} replace\n");
@@ -1606,7 +1684,11 @@ fn create_caller_function(mc_functions: &[(String, String)], index: CodeFuncIdx,
 
     //assert_eq!(f.basic_blocks.len(), 1);
 
-    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None);
+    let mut pool = ConstantPool::new();
+
+    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None, &mut pool);
+
+    assert!(pool.is_empty());
 
     let pos = block_pos_from_idx(idx, true);
 

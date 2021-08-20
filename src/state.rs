@@ -1,4 +1,4 @@
-use crate::mir::{MirBasicBlock, Terminator};
+use crate::mir::{MirBasicBlock, RegOrConst, Terminator};
 use crate::{Axis, BranchTarget, CodeFuncIdx, GlobalList, HalfRegister, Instr, Label, MemoryList, MemoryType, Register, WasmValue, eval_init_expr};
 use crate::{BRANCH_CONV, BranchConv};
 use std::{collections::HashMap, convert::TryInto};
@@ -789,8 +789,12 @@ impl State {
                 }
                 &I32Op { dst, lhs, op, rhs } => {
                     let l = self.registers.get_half(lhs)?;
-                    let r = self.registers.get_half(rhs)?;
 
+                    let r = match rhs {
+                        RegOrConst::Reg(reg) => self.registers.get_half(reg)?,
+                        RegOrConst::Const(c) => c,
+                    };
+                    
                     let d = eval_i32_op(lhs, rhs, l, op, r, &mut self.registers);
 
                     println!("{} {} {}", l, r, d);
@@ -863,7 +867,7 @@ pub(crate) fn apply_actions(basic_block: &mut MirBasicBlock, mut actions: Vec<Op
 
     for (old_idx, old_instr) in instrs.into_iter().enumerate() {
         let mut modified = false;
-
+        
         for action_idx in 0..actions.len() {
             match &actions[action_idx] {
                 OptAction::Replace { id, instr } => {
@@ -882,17 +886,24 @@ pub(crate) fn apply_actions(basic_block: &mut MirBasicBlock, mut actions: Vec<Op
         }
     }
 
+    assert!(actions.is_empty());
+
     basic_block.instrs = result;
 }
 
-fn eval_i32_op<T: Copy>(lhs: HalfRegister, rhs: HalfRegister, l: i32, op: &str, r: i32, registers: &mut RegFile<T>) -> i32 {
+fn eval_i32_op<T: Copy>(lhs: HalfRegister, rhs: RegOrConst, l: i32, op: &str, r: i32, registers: &mut RegFile<T>) -> i32 {
     match op {
         "+=" => l.wrapping_add(r),
         "-=" => l.wrapping_sub(r),
         "*=" => l.wrapping_mul(r),
         "/=" => {
             registers.clobber_half(lhs);
-            registers.clobber_half(rhs);
+
+            if let RegOrConst::Reg(rhs) = rhs {
+                registers.clobber_half(rhs);
+            } else {
+                panic!()
+            }
             l.wrapping_div(r)
         },
         "/=u" => ((l as u32) / (r as u32)) as i32,
@@ -904,7 +915,9 @@ fn eval_i32_op<T: Copy>(lhs: HalfRegister, rhs: HalfRegister, l: i32, op: &str, 
         "shl" => l.wrapping_shl(r as u32),
         "shru" => ((l as u32).wrapping_shr(r as u32)) as i32,
         "shrs" => {
-            registers.clobber_half(rhs);
+            if let RegOrConst::Reg(rhs) = rhs {
+                registers.clobber_half(rhs);
+            }
             l.wrapping_shr(r as u32)
         },
         "rotl" => l.rotate_left((r as u32) % 32),

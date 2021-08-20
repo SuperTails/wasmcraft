@@ -1,6 +1,6 @@
 use wasmparser::Type;
 
-use crate::mir::{Instr, MirBasicBlock};
+use crate::mir::{Instr, MirBasicBlock, RegOrConst};
 
 use super::{RegFile, Stack, StateError, StateResult, eval_i32_op, OptAction};
 
@@ -154,7 +154,7 @@ impl<'a> ConstProp<'a> {
                         self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
                     }
 
-		    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0)
+                    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0)
                 } else {
                     println!("Stopping at LoadLocalI32");
 		    return Ok(true);
@@ -178,8 +178,8 @@ impl<'a> ConstProp<'a> {
                         self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
                     }
 
-		    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0);
-		    self.registers.set_half(reg.as_hi(), self.locals[ptr as usize].0);
+                    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0);
+                    self.registers.set_half(reg.as_hi(), self.locals[ptr as usize].0);
                 } else {
                     println!("Stopping at LoadLocalI64");
                     return Ok(true);
@@ -218,7 +218,11 @@ impl<'a> ConstProp<'a> {
 
             &Instr::I32Op { dst, lhs, op, rhs } => {
                 let l = read(self.registers.get_half(lhs))?;
-                let r = read(self.registers.get_half(rhs))?;
+
+                let r = match rhs {
+                    RegOrConst::Reg(r) => read(self.registers.get_half(r))?,
+                    RegOrConst::Const(c) => PropWord::Exact(c),
+                };
 
                 if let PropWord::Exact(r) = r {
                     if op == "+=" {
@@ -231,8 +235,13 @@ impl<'a> ConstProp<'a> {
                             id: self.pc,
                             instr: vec![Instr::AddI32Const(lhs, r.wrapping_neg())],
                         })
+                    } else if op != "/=" && op != "remu" && op != "rems" {
+                        self.actions.push(OptAction::Replace {
+                            id: self.pc,
+                            instr: vec![Instr::I32Op { dst, lhs, op, rhs: r.into() }]
+                        });
                     } else {
-                        println!("{} {}", op, r);
+                        println!("{} {}", op, rhs);
                     }
                 }
 

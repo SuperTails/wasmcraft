@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::{BRANCH_CONV, BranchConv, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
 use wasmparser::{FuncType, MemoryImmediate, Operator, Type, TypeDef, TypeOrFuncType};
@@ -23,6 +24,33 @@ pub enum Axis {
     X,
     Y,
     Z,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegOrConst {
+    Reg(HalfRegister),
+    Const(i32),
+}
+
+impl From<HalfRegister> for RegOrConst {
+    fn from(r: HalfRegister) -> Self {
+        RegOrConst::Reg(r)
+    }
+}
+
+impl From<i32> for RegOrConst {
+    fn from(c: i32) -> Self {
+        RegOrConst::Const(c)
+    }
+}
+
+impl fmt::Display for RegOrConst {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RegOrConst::Reg(r) => write!(f, "{}", r),
+            RegOrConst::Const(c) => write!(f, "%%{}", c),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +97,7 @@ pub enum Instr {
 
     I32MulTo64 { dst: Register, lhs: HalfRegister, rhs: HalfRegister },
 
-    I32Op { dst: HalfRegister, lhs: HalfRegister, op: &'static str, rhs: HalfRegister },
+    I32Op { dst: HalfRegister, lhs: HalfRegister, op: &'static str, rhs: RegOrConst },
 
     I32Extend8S(Register),
     I32Extend16S(Register),
@@ -173,16 +201,15 @@ impl Instr {
         assert_ne!(reg, temp);
 
         vec![
-            Instr::SetConst(neg_one, -1),
             Instr::SetConst(pos_one.as_lo(), 1),
             Instr::SetConst(pos_one.as_hi(), 0),
 
             // Bitwise invert the low part
-            Instr::I32Op { dst: reg.as_lo(), lhs: reg.as_lo(), op: "*=", rhs: neg_one },
+            Instr::I32Op { dst: reg.as_lo(), lhs: reg.as_lo(), op: "*=", rhs: (-1).into() },
             Instr::AddI32Const(reg.as_lo(), -1),
 
             // Bitwise invert the high part
-            Instr::I32Op { dst: reg.as_hi(), lhs: reg.as_hi(), op: "*=", rhs: neg_one },
+            Instr::I32Op { dst: reg.as_hi(), lhs: reg.as_hi(), op: "*=", rhs: (-1).into() },
             Instr::AddI32Const(reg.as_hi(), -1),
 
             Instr::I64Add { dst: temp, lhs: reg, rhs: pos_one },
@@ -210,20 +237,20 @@ impl Instr {
             Instr::I32MulTo64 { dst: lo_product, lhs: lhs.as_lo(), rhs: rhs.as_lo() },
 
             // mid_1 = lhs_lo = lhs_lo * rhs_hi
-            Instr::I32Op { dst: lhs.as_lo(), lhs: lhs.as_lo(), op: "*=", rhs: rhs.as_hi() },
+            Instr::I32Op { dst: lhs.as_lo(), lhs: lhs.as_lo(), op: "*=", rhs: rhs.as_hi().into() },
             // mid_2 = lhs_hi = lhs_hi * rhs_lo
-            Instr::I32Op { dst: lhs.as_hi(), lhs: lhs.as_hi(), op: "*=", rhs: rhs.as_lo() },
+            Instr::I32Op { dst: lhs.as_hi(), lhs: lhs.as_hi(), op: "*=", rhs: rhs.as_lo().into() },
 
             // dst[0] = lo_product[0]
-            Instr::I32Op { dst: dst.as_lo(), lhs: dst.as_lo(), op: "+=", rhs: lo_product.as_lo() },
+            Instr::I32Op { dst: dst.as_lo(), lhs: dst.as_lo(), op: "+=", rhs: lo_product.as_lo().into() },
 
             // dst[1] = lo_product[1]
-            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lo_product.as_hi() },
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lo_product.as_hi().into() },
 
             // dst[1] += mid_1
             // dst[2] += mid_2
-            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_lo() },
-            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_hi() },
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_lo().into() },
+            Instr::I32Op { dst: dst.as_hi(), lhs: dst.as_hi(), op: "+=", rhs: lhs.as_hi().into() },
         ]
     }
 
@@ -518,7 +545,7 @@ impl FuncBodyStream {
         self.op_stack.pop_i32();
         let dst = self.get_i32_dst(lhs, op, rhs);
 
-        self.push_instr(Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op, rhs: rhs.as_lo() });
+        self.push_instr(Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op, rhs: rhs.as_lo().into() });
 
         self.push_instr(Instr::PushI32From(dst));
         self.op_stack.push_i32();
@@ -1085,7 +1112,7 @@ impl FuncBodyStream {
 
                 self.push_instr(Instr::I32Popcnt(reg.as_lo()));
                 self.push_instr(Instr::I32Popcnt(reg.as_hi()));
-                self.push_instr(Instr::I32Op { dst: reg.as_lo(), lhs: reg.as_lo(), op: "+=", rhs: reg.as_hi() });
+                self.push_instr(Instr::I32Op { dst: reg.as_lo(), lhs: reg.as_lo(), op: "+=", rhs: reg.as_hi().into() });
                 self.push_instr(Instr::SetConst(reg.as_hi(), 0));
 
                 self.op_stack.push_i64();
@@ -1206,24 +1233,24 @@ impl FuncBodyStream {
             I64Or => {
                 self.make_i64_binop(|dst, lhs, rhs| {
                     vec![
-                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "|=", rhs: rhs.as_lo() },
-                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "|=", rhs: rhs.as_hi() },
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "|=", rhs: rhs.as_lo().into() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "|=", rhs: rhs.as_hi().into() },
                     ]
                 });
             }
             I64Xor => {
                 self.make_i64_binop(|dst, lhs, rhs| {
                     vec![
-                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "^=", rhs: rhs.as_lo() },
-                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "^=", rhs: rhs.as_hi() },
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "^=", rhs: rhs.as_lo().into() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "^=", rhs: rhs.as_hi().into() },
                     ]
                 });
             }
             I64And => {
                 self.make_i64_binop(|dst, lhs, rhs| {
                     vec![
-                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "&=", rhs: rhs.as_lo() },
-                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "&=", rhs: rhs.as_hi() },
+                        Instr::I32Op { dst: dst.as_lo(), lhs: lhs.as_lo(), op: "&=", rhs: rhs.as_lo().into() },
+                        Instr::I32Op { dst: dst.as_hi(), lhs: lhs.as_hi(), op: "&=", rhs: rhs.as_hi().into() },
                     ]
                 });
             }
