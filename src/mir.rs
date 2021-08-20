@@ -53,6 +53,74 @@ impl fmt::Display for RegOrConst {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Usage {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl Usage {
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Usage::Read, Usage::Read) => Usage::Read,
+            (Usage::Write, Usage::Write) => Usage::Write,
+            _ => Usage::ReadWrite,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum InstrUses {
+    All(Usage),
+    Some(HashMap<HalfRegister, Usage>),
+}
+
+impl InstrUses {
+    pub fn none() -> Self {
+        InstrUses::Some(HashMap::new())
+    }
+
+    pub fn one(reg: HalfRegister, usage: Usage) -> Self {
+        InstrUses::Some(Some((reg, usage)).into_iter().collect())
+    }
+
+    pub fn one_full(reg: Register, usage: Usage) -> Self {
+        InstrUses::Some(vec![(reg.as_lo(), usage), (reg.as_hi(), usage)].into_iter().collect())
+    }
+
+    pub fn add(&mut self, reg: HalfRegister, usage: Usage) {
+        match self {
+            InstrUses::All(u) => *u = u.combine(usage),
+            InstrUses::Some(map) => {
+                if let Some(existing) = map.get_mut(&reg) {
+                    *existing = existing.combine(usage);
+                } else {
+                    map.insert(reg, usage);
+                }
+            }
+        }
+    }
+
+    pub fn some<T>(data: T) -> Self
+        where T: IntoIterator<Item=(HalfRegister, Usage)>,
+    {
+        let mut uses = InstrUses::none();
+
+        for (reg, usage) in data {
+            uses.add(reg, usage);
+        }
+
+        uses
+    }
+
+    pub fn some_full<T>(data: T) -> Self
+        where T: IntoIterator<Item=(Register, Usage)>,
+    {
+        Self::some(data.into_iter().flat_map(|(r, u)| [(r.as_lo(), u), (r.as_hi(), u)]))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Instr {
     /* Misc. instructions */
@@ -313,7 +381,158 @@ impl Instr {
     }
     */
 
+    pub fn get_uses(&self) -> InstrUses {
+        match self {
+            Instr::Comment(_) => InstrUses::none(),
+            Instr::Tellraw(_) => InstrUses::All(Usage::Read),
+            Instr::SetTurtleCoord(reg, _) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::SetTurtleBlock(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::TurtleGet(reg) => InstrUses::one(reg.as_lo(), Usage::Write),
+            Instr::PushReturnAddress(_) => InstrUses::none(),
+            Instr::PushI32From(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::PushI64From(reg) => InstrUses::one_full(*reg, Usage::Read),
+            Instr::PushI32Const(_) => InstrUses::none(),
+            Instr::PushI64Const(_) => InstrUses::none(),
+            Instr::PopI32Into(reg) => InstrUses::one(reg.as_lo(), Usage::Write),
+            Instr::PopI64Into(reg) => InstrUses::one_full(*reg, Usage::Write),
+            Instr::Drop => InstrUses::none(),
+            Instr::Call(_) => InstrUses::All(Usage::ReadWrite),
+            Instr::DynCall(_, _) => InstrUses::All(Usage::ReadWrite),
+            Instr::SetLocalPtr(_) => InstrUses::none(),
+            Instr::LoadLocalI32(reg) => InstrUses::one(reg.as_lo(), Usage::Write),
+            Instr::StoreLocalI32(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::LoadLocalI64(reg) => InstrUses::one_full(*reg, Usage::Write),
+            Instr::StoreLocalI64(reg) => InstrUses::one_full(*reg, Usage::Read),
+            Instr::PushFrame(_) => InstrUses::none(),
+            Instr::PopFrame(_) => InstrUses::none(),
+            Instr::SetMemPtr(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::LoadI32(reg, _) |
+            Instr::LoadI32_8U(reg, _) | 
+            Instr::LoadI32_8S(reg, _) |
+            Instr::LoadI32_16U(reg, _) |
+            Instr::LoadI32_16S(reg, _) => InstrUses::one(reg.as_lo(), Usage::Write),
+            Instr::StoreI32(reg, _) |
+            Instr::StoreI32_8(reg, _) |
+            Instr::StoreI32_16(reg, _) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::StoreRow(_) => todo!(),
+            Instr::SetConst(reg, _) => InstrUses::one(*reg, Usage::Write),
+            Instr::Copy { dst, src } => InstrUses::some(vec![(*dst, Usage::Write), (*src, Usage::Read)]),
+            Instr::SelectI32 { dst_reg, true_reg, false_reg, cond_reg } =>
+                InstrUses::some(vec![(dst_reg.as_lo(), Usage::Write), (true_reg.as_lo(), Usage::Read), (false_reg.as_lo(), Usage::Read), (cond_reg.as_lo(), Usage::Read)]),
+            Instr::SelectI64 { dst_reg, true_reg, false_reg, cond_reg } =>
+                InstrUses::some_full(vec![(*dst_reg, Usage::Write), (*true_reg, Usage::Read), (*false_reg, Usage::Read), (*cond_reg, Usage::Read)]),
 
+            Instr::I64Add { .. } |
+            Instr::I64DivS { .. } |
+            Instr::I64DivU { .. } |
+            Instr::I64RemS { .. } |
+            Instr::I64RemU { .. } |
+            Instr::I64Rotl { .. } |
+            Instr::I64Rotr { .. } |
+            Instr::I64Eq { .. } |
+            Instr::I64UComp { .. } |
+            Instr::I64SComp { .. } |
+            Instr::I64Shl { .. } |
+            Instr::I64ShrU { .. } |
+            Instr::I64ShrS { .. } |
+            Instr::I32MulTo64 { .. } => InstrUses::All(Usage::ReadWrite),
+            Instr::I32Op { dst, lhs, op, rhs } => {
+                // TODO:
+                InstrUses::All(Usage::ReadWrite)
+            },
+            Instr::AddI32Const(reg, _) => InstrUses::one(*reg, Usage::ReadWrite),
+            Instr::I32Extend8S(reg) => InstrUses::one(reg.as_lo(), Usage::ReadWrite),
+            Instr::I32Extend16S(reg) => InstrUses::one(reg.as_lo(), Usage::ReadWrite),
+            Instr::I32Popcnt(reg) => InstrUses::one(*reg, Usage::ReadWrite),
+            Instr::I32Ctz(reg) => InstrUses::one(reg.as_lo(), Usage::ReadWrite),
+            Instr::I32Clz(reg) => InstrUses::one(reg.as_lo(), Usage::ReadWrite),
+            Instr::I64Clz { dst, src } => InstrUses::some_full(vec![(*dst, Usage::Write), (*src, Usage::Read)]),
+            Instr::I64Ctz { dst, src } => InstrUses::some_full(vec![(*dst, Usage::Write), (*src, Usage::Read)]),
+            Instr::I64ExtendI32S { dst, src } => {
+                let mut uses = InstrUses::none();
+                uses.add(dst.as_hi(), Usage::Write);
+                uses.add(dst.as_lo(), Usage::Write);
+                uses.add(src.as_lo(), Usage::Read);
+                uses
+            },
+            Instr::I64ExtendI32U(reg) => InstrUses::one_full(*reg, Usage::ReadWrite),
+            Instr::I32Eqz { val, cond } => InstrUses::some(vec![(val.as_lo(), Usage::Read), (cond.as_lo(), Usage::Write)]),
+            Instr::I64Eqz { val, cond } => InstrUses::some_full(vec![(*val, Usage::Read), (*cond, Usage::Write)]),
+            Instr::Unreachable => todo!(),
+        }
+    }
+
+    pub fn has_side_effect(&self) -> bool {
+        /*
+            Instr::SetTurtleCoord(_, _) => todo!(),
+            Instr::SetTurtleBlock(_) => todo!(),
+            Instr::PushReturnAddress(_) => todo!(),
+            Instr::PushI32From(_) => todo!(),
+            Instr::PushI64From(_) => todo!(),
+            Instr::PushI32Const(_) => todo!(),
+            Instr::PushI64Const(_) => todo!(),
+            Instr::PopI32Into(_) => todo!(),
+            Instr::PopI64Into(_) => todo!(),
+            Instr::Drop => todo!(),
+            Instr::Call(_) => todo!(),
+            Instr::DynCall(_, _) => todo!(),
+            Instr::SetLocalPtr(_) => todo!(),
+            Instr::PushFrame(_) => todo!(),
+            Instr::StoreLocalI32(_) => todo!(),
+            Instr::StoreLocalI64(_) => todo!(),
+            Instr::PopFrame(_) => todo!(),
+            Instr::SetMemPtr(_) => todo!(),
+            Instr::StoreI32(_, _) => todo!(),
+            Instr::StoreI32_8(_, _) => todo!(),
+            Instr::StoreI32_16(_, _) => todo!(),
+            Instr::StoreRow(_) => todo!(),
+        */
+
+        !matches!(self,
+            Instr::Comment(_) |
+            Instr::Tellraw(_) |
+            Instr::TurtleGet(_) |
+            Instr::LoadLocalI32(_) |
+            Instr::LoadLocalI64(_) |
+            Instr::LoadI32(_, _) |
+            Instr::LoadI32_8U(_, _) |
+            Instr::LoadI32_8S(_, _) |
+            Instr::LoadI32_16U(_, _) |
+            Instr::LoadI32_16S(_, _) |
+            Instr::SetConst(_, _) |
+            Instr::Copy { .. } |
+            Instr::SelectI32 { .. } |
+            Instr::SelectI64 { .. } |
+            Instr::I64Add { .. } |
+            Instr::I64DivS { .. } |
+            Instr::I64DivU { .. } |
+            Instr::I64RemS { .. } |
+            Instr::I64RemU { .. } |
+            Instr::I64Rotl { .. } |
+            Instr::I64Rotr { .. } |
+            Instr::I64Eq { .. } |
+            Instr::I64UComp { .. } |
+            Instr::I64SComp { .. } |
+            Instr::I64Shl { .. } |
+            Instr::I64ShrU { .. } |
+            Instr::I64ShrS { .. } |
+            Instr::I32MulTo64 { .. } |
+            Instr::I32Op { .. } |
+            Instr::AddI32Const(_, _) |
+            Instr::I32Extend8S(_) |
+            Instr::I32Extend16S(_) |
+            Instr::I32Popcnt(_) |
+            Instr::I32Ctz(_) |
+            Instr::I32Clz(_) |
+            Instr::I64Clz { .. } |
+            Instr::I64Ctz { .. } |
+            Instr::I64ExtendI32S { .. } |
+            Instr::I64ExtendI32U(_) |
+            Instr::I32Eqz { .. } |
+            Instr::I64Eqz { .. } |
+            Instr::Unreachable
+        )
+    }
 }
 
 pub fn get_reachable_blocks(body: &[MirBasicBlock]) -> Vec<bool> {
