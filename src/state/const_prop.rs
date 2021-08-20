@@ -198,7 +198,6 @@ impl<'a> ConstProp<'a> {
                     self.locals.clear();
                 }
             }
-            Instr::ResetFrames => todo!(),
             Instr::PushFrame(_) => {
                 self.locals = Vec::new();
             }

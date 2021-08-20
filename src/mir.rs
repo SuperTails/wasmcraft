@@ -55,29 +55,66 @@ impl fmt::Display for RegOrConst {
 
 #[derive(Debug, Clone)]
 pub enum Instr {
+    /* Misc. instructions */
     Comment(String),
     Tellraw(String),
 
+    /* Turtle instructions */
     SetTurtleCoord(Register, Axis),
     SetTurtleBlock(Register),
     TurtleGet(Register),
+
+    /* Stack-modifying instructions */
+    PushReturnAddress(Label),
 
     PushI32From(Register),
     PushI64From(Register),
     PushI32Const(i32),
     PushI64Const(i64),
-    PushReturnAddress(Label),
 
     PopI32Into(Register),
     PopI64Into(Register),
 
     Drop,
-
+    
+    /* Call instructions */
     Call(CodeFuncIdx),
     DynCall(Register, Option<u32>),
 
+    /* Local instructions */
+    SetLocalPtr(u32),
+    LoadLocalI32(Register),
+    StoreLocalI32(Register),
+    LoadLocalI64(Register),
+    StoreLocalI64(Register),
+
+    PushFrame(u32),
+    PopFrame(u32),
+
+    /* Memory instructions */
+    SetMemPtr(Register),
+    /// reg, align
+    /// reg = *memptr
+    LoadI32(Register, u8),
+    LoadI32_8U(Register, u8),
+    LoadI32_8S(Register, u8),
+    LoadI32_16U(Register, u8),
+    LoadI32_16S(Register, u8),
+    /// reg, align
+    /// *memptr = reg
+    StoreI32(Register, u8),
+    StoreI32_8(Register, u8),
+    StoreI32_16(Register, u8),
+
+    /// Stores 8 consecutive words
+    StoreRow(Register),
+
+    /* Register manipulation and arithmetic */
     SetConst(HalfRegister, i32),
     Copy { dst: HalfRegister, src: HalfRegister },
+
+    SelectI32 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
+    SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     I64Add { dst: Register, lhs: Register, rhs: Register },
     I64DivS { dst: Register, lhs: Register, rhs: Register },
@@ -99,6 +136,8 @@ pub enum Instr {
 
     I32Op { dst: HalfRegister, lhs: HalfRegister, op: &'static str, rhs: RegOrConst },
 
+    AddI32Const(HalfRegister, i32),
+
     I32Extend8S(Register),
     I32Extend16S(Register),
     I32Popcnt(HalfRegister),
@@ -107,44 +146,11 @@ pub enum Instr {
     I64Clz { dst: Register, src: Register },
     I64Ctz { dst: Register, src: Register },
 
-    LoadLocalI32(Register),
-    StoreLocalI32(Register),
-    LoadLocalI64(Register),
-    StoreLocalI64(Register),
-
-    /// reg, align
-    /// reg = *memptr
-    LoadI32(Register, u8),
-    LoadI32_8U(Register, u8),
-    LoadI32_8S(Register, u8),
-    LoadI32_16U(Register, u8),
-    LoadI32_16S(Register, u8),
-    /// reg, align
-    /// *memptr = reg
-    StoreI32(Register, u8),
-    StoreI32_8(Register, u8),
-    StoreI32_16(Register, u8),
-
-    /// Stores 8 consecutive words
-    StoreRow(Register),
-
-    AddI32Const(HalfRegister, i32),
     I64ExtendI32S { dst: Register, src: Register },
     I64ExtendI32U(Register),
 
-
     I32Eqz { val: Register, cond: Register },
     I64Eqz { val: Register, cond: Register },
-
-    SetMemPtr(Register),
-    SetLocalPtr(u32),
-
-    ResetFrames,
-    PushFrame(u32),
-    PopFrame(u32),
-
-    SelectI32 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
-    SelectI64 { dst_reg: Register, true_reg: Register, false_reg: Register, cond_reg: Register },
 
     Unreachable,
 }
@@ -298,7 +304,6 @@ impl Instr {
             I32Eqz { val, cond } => {},
             SetGlobalPtr(_) => {},
             SetLocalPtr(_) => {},
-            ResetFrames => {},
             PushFrame(_) => {},
             PopFrame(_) => {},
             Drop => op_stack.pop_value(),

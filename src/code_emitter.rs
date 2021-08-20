@@ -671,10 +671,6 @@ impl<'a> CodeEmitter<'a> {
                 }
             }
 
-            ResetFrames => {
-                self.body.push("execute as @e[tag=frameptr] run tp @s 0 0 1".to_string());
-                self.body.push("scoreboard players set %frameptr wasm 0".to_string());
-            }
             &PushFrame(local_count) => {
                 if local_count != 0 {
                     self.body.push(format!("# Push frame with {} locals", local_count));

@@ -554,11 +554,6 @@ impl State {
                     self.registers.set_i32(dst, d as i32);
                 }
 
-
-                ResetFrames => {
-                    todo!()
-                }
-
                 &SetConst(r, v) => {
                     self.registers.set_half(r, v);
                 }
