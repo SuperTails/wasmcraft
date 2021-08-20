@@ -160,7 +160,7 @@ pub enum Instr {
     PopFrame(u32),
 
     /* Memory instructions */
-    SetMemPtr(Register),
+    SetMemPtr(RegOrConst),
     /// reg, align
     /// reg = *memptr
     LoadI32(Register, u8),
@@ -405,7 +405,13 @@ impl Instr {
             Instr::StoreLocalI64(reg) => InstrUses::one_full(*reg, Usage::Read),
             Instr::PushFrame(_) => InstrUses::none(),
             Instr::PopFrame(_) => InstrUses::none(),
-            Instr::SetMemPtr(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::SetMemPtr(reg) => {
+                if let RegOrConst::Reg(reg) = reg {
+                    InstrUses::one(*reg, Usage::Read)
+                } else {
+                    InstrUses::none()
+                }
+            },
             Instr::LoadI32(reg, _) |
             Instr::LoadI32_8U(reg, _) | 
             Instr::LoadI32_8S(reg, _) |
@@ -825,7 +831,7 @@ impl FuncBodyStream {
         self.push_instr(Instr::PopI32Into(areg));
         self.op_stack.pop_i32();
         self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(areg));
+        self.push_instr(Instr::SetMemPtr(areg.as_lo().into()));
 
         self.push_instr(storer(dreg, memarg.align));
     }
@@ -852,7 +858,7 @@ impl FuncBodyStream {
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
         self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(reg));
+        self.push_instr(Instr::SetMemPtr(reg.as_lo().into()));
 
         self.push_instr(instr(reg, memarg.align));
         self.push_instr(Instr::PushI32From(reg));
@@ -869,7 +875,7 @@ impl FuncBodyStream {
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
         self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(reg));
+        self.push_instr(Instr::SetMemPtr(reg.as_lo().into()));
 
         self.push_instr(Instr::SetConst(reg.as_hi(), 0));
         self.push_instr(instr(reg, memarg.align));
@@ -887,7 +893,7 @@ impl FuncBodyStream {
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
         self.push_instr(Instr::AddI32Const(reg.as_lo(), memarg.offset as i32));
-        self.push_instr(Instr::SetMemPtr(reg));
+        self.push_instr(Instr::SetMemPtr(reg.as_lo().into()));
 
         self.push_instr(instr(reg, memarg.align));
         self.push_instr(Instr::I64ExtendI32S { dst: reg, src: reg });
@@ -1200,10 +1206,10 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PopI32Into(areg));
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
-                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::SetMemPtr(areg.as_lo().into()));
                 self.push_instr(Instr::StoreI32(dreg_lo, memarg.align));
                 self.push_instr(Instr::AddI32Const(areg.as_lo(), 4));
-                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::SetMemPtr(areg.as_lo().into()));
                 self.push_instr(Instr::StoreI32(dreg_hi, memarg.align));
             }
             I64Load { memarg } => {
@@ -1216,10 +1222,10 @@ impl FuncBodyStream {
                 self.op_stack.pop_i32();
 
                 self.push_instr(Instr::AddI32Const(areg.as_lo(), memarg.offset as i32));
-                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::SetMemPtr(areg.as_lo().into()));
                 self.push_instr(Instr::LoadI32(dreg_lo, memarg.align));
                 self.push_instr(Instr::AddI32Const(areg.as_lo(), 4));
-                self.push_instr(Instr::SetMemPtr(areg));
+                self.push_instr(Instr::SetMemPtr(areg.as_lo().into()));
                 self.push_instr(Instr::LoadI32(dreg_hi, memarg.align));
 
                 // TODO: Remove

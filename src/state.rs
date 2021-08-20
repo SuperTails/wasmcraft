@@ -7,6 +7,7 @@ use std::convert::TryFrom;
 
 pub mod const_prop;
 pub mod stack_drops;
+pub mod dead_writes;
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -559,7 +560,11 @@ impl State {
                 }
 
                 &SetMemPtr(r) => {
-                    let v = self.registers.get_i32(r)?;
+                    let v = match r {
+                        RegOrConst::Reg(reg) => self.registers.get_half(reg)?,
+                        RegOrConst::Const(v) => v,
+                    };
+
                     assert!(v >= 0, "{:?}", v);
                     self.memory_ptr = v as u32;
                 }

@@ -205,7 +205,17 @@ impl<'a> ConstProp<'a> {
                 self.locals = Vec::new();
             }
 
-            Instr::SetMemPtr(_) => {}
+            Instr::SetMemPtr(r) => {
+                if let RegOrConst::Reg(reg) = r {
+                    if let PropWord::Exact(v) = read(self.registers.get_half(*reg))? {
+                        self.actions.push(OptAction::Replace {
+                            id: self.pc,
+                            instr: vec![Instr::SetMemPtr(RegOrConst::Const(v))]
+                        })
+                    }
+                }
+            }
+
             Instr::LoadI32(reg, _) |
             Instr::LoadI32_8U(reg, _) | 
             Instr::LoadI32_8S(reg, _) |

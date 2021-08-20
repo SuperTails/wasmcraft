@@ -1452,7 +1452,7 @@ mod test {
         let prelude = vec![
             Instr::PushI32Const(4),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
             
             Instr::PushI32Const(val1),
             Instr::PopI32Into(Register::Work(1)),
@@ -1460,7 +1460,7 @@ mod test {
 
             Instr::PushI32Const(8),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
             
             Instr::PushI32Const(val2),
             Instr::PopI32Into(Register::Work(1)),
@@ -1471,7 +1471,7 @@ mod test {
         load_byte.extend([
             Instr::PushI32Const(5),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::LoadI32_8U(Register::Return(0), 0),
         ]);
@@ -1481,7 +1481,7 @@ mod test {
         load_halfword_unalign.extend([
             Instr::PushI32Const(5),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
@@ -1491,7 +1491,7 @@ mod test {
         load_halfword_align.extend([
             Instr::PushI32Const(6),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
@@ -1501,7 +1501,7 @@ mod test {
         load_word_unalign.extend([
             Instr::PushI32Const(7),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::LoadI32(Register::Return(0), 0),
            
@@ -1514,7 +1514,7 @@ mod test {
         let instrs = vec![
             Instr::PushI32Const(4),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::PushI32Const(42),
             Instr::PopI32Into(Register::Work(1)),
@@ -1522,7 +1522,7 @@ mod test {
 
             Instr::PushI32Const(4),
             Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0)),
+            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
 
             Instr::LoadI32(Register::Return(0), 2),
         ];

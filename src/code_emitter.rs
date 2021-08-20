@@ -248,9 +248,21 @@ impl<'a> CodeEmitter<'a> {
                 }
             }
 
-            SetMemPtr(reg) => {
-                self.body.push(format!("scoreboard players operation %ptr reg = {} reg", reg.get_lo()));
-                self.body.push("function intrinsic:setptr".to_string());
+            SetMemPtr(val) => {
+                match val {
+                    RegOrConst::Reg(reg) => {
+                        self.body.push(format!("scoreboard players operation %ptr reg = {} reg", reg));
+                        self.body.push("function intrinsic:setptr".to_string());
+                    }
+                    RegOrConst::Const(c) => {
+                        self.body.push(format!("scoreboard players set %ptr reg {}", *c));
+
+                        let z = (*c) % 8 + 8;
+                        let y = (*c / 8) % 256;
+                        let x = (*c / (8 * 256)) % 8;
+                        self.body.push(format!("execute as @e[tag=memoryptr] run tp @s {} {} {}", x, y, z));
+                    }
+                } 
             }
             &PopI32Into(reg) => {           
                 self.emit_pop_i32_into(reg);
