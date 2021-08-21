@@ -101,10 +101,10 @@ mod test {
             label: Label::new(CodeFuncIdx(0), 0),
             op_stack: OpStack::new(),
             instrs: vec![
-                Instr::SetConst(Register::Work(0).as_lo(), 42),
-                Instr::SetConst(Register::Work(1).as_lo(), 11),
-                Instr::AddI32Const(Register::Work(0).as_lo(), 24),
-                Instr::SetConst(Register::Work(0).as_lo(), 0),
+                Instr::SetConst(Register::Work(0, 0).as_lo(), 42),
+                Instr::SetConst(Register::Work(1, 0).as_lo(), 11),
+                Instr::AddI32Const(Register::Work(0, 0).as_lo(), 24),
+                Instr::SetConst(Register::Work(0, 0).as_lo(), 0),
             ],
             terminator: Terminator::Halt,
         };

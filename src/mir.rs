@@ -270,12 +270,12 @@ impl Instr {
         ]
     }
 
-    pub fn i64_neg(reg: Register) -> Vec<Self> {
-        let neg_one = Register::Work(3).as_lo();
+    pub fn i64_neg(reg: Register, namespace: u32) -> Vec<Self> {
+        let neg_one = Register::Work(3, namespace).as_lo();
 
-        let pos_one = Register::Work(4);
+        let pos_one = Register::Work(4, namespace);
 
-        let temp = Register::Work(5);
+        let temp = Register::Work(5, namespace);
 
         assert_ne!(reg, neg_one.0);
         assert_ne!(reg, pos_one);
@@ -299,15 +299,15 @@ impl Instr {
         ]
     }
 
-    pub fn i64_mul(dst: Register, lhs: Register, rhs: Register) -> Vec<Self> {
+    pub fn i64_mul(dst: Register, lhs: Register, rhs: Register, namespace: u32) -> Vec<Self> {
         assert_ne!(dst, lhs);
         assert_ne!(dst, rhs);
 
-        let lo_product = Register::Work(3);
+        let lo_product = Register::Work(3, namespace);
 
-        assert!(!matches!(dst, Register::Work(3 | 4 | 5)));
-        assert!(!matches!(lhs, Register::Work(3 | 4 | 5)));
-        assert!(!matches!(rhs, Register::Work(3 | 4 | 5)));
+        assert!(!matches!(dst, Register::Work(3 | 4 | 5, namespace)));
+        assert!(!matches!(lhs, Register::Work(3 | 4 | 5, namespace)));
+        assert!(!matches!(rhs, Register::Work(3 | 4 | 5, namespace)));
 
         vec![
             // dst = 0
@@ -740,6 +740,10 @@ impl FuncBodyStream {
         }
     }
 
+    fn work_reg(&self, idx: u32) -> Register {
+        Register::Work(idx, self.func_idx.0)
+    }
+
     fn setup_epilogue(&mut self, local_count: u32, returns: &[Type]) {
         let old_bb_idx = self.bb_index;
         self.bb_index = 1;
@@ -759,7 +763,7 @@ impl FuncBodyStream {
             BranchConv::Grid | BranchConv::Chain | BranchConv::Loop => {
                 self.push_instr(Instr::Comment(" Pop return address".to_string()));
                 // Pop return address
-                let reg = Register::Work(0);
+                let reg = Register::Temp(0);
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::PopI32Into(reg));
                 self.set_terminator(Terminator::DynBranch(reg, None));
@@ -778,7 +782,7 @@ impl FuncBodyStream {
             }
             "gts" | "ges" | "les" | "lts" | "==" | "!=" |
             "gtu" | "geu" | "leu" | "ltu" | "/=" | "/=u" | "remu" | "rems" => {
-                Register::Work(2)
+                self.work_reg(2)
             }
             _ => {
                 todo!("{:?}", op)
@@ -788,8 +792,8 @@ impl FuncBodyStream {
     }
 
     pub fn make_i32_binop(&mut self, op: &'static str) {
-        let rhs = Register::Work(1);
-        let lhs = Register::Work(0);
+        let rhs = self.work_reg(1);
+        let lhs = self.work_reg(0);
 
         self.push_instr(Instr::PopI32Into(rhs));
         self.op_stack.pop_i32();
@@ -845,8 +849,8 @@ impl FuncBodyStream {
     {
         assert_eq!(memarg.memory, 0);
 
-        let dreg = Register::Work(1);
-        let areg = Register::Work(0);
+        let dreg = self.work_reg(1);
+        let areg = self.work_reg(0);
 
         self.push_instr(Instr::PopI32Into(dreg));
         self.op_stack.pop_i32();
@@ -875,7 +879,7 @@ impl FuncBodyStream {
     {
         assert_eq!(memarg.memory, 0);
 
-        let reg = Register::Work(0);
+        let reg = self.work_reg(0);
 
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
@@ -892,7 +896,7 @@ impl FuncBodyStream {
     {
         assert_eq!(memarg.memory, 0);
 
-        let reg = Register::Work(0);
+        let reg = self.work_reg(0);
 
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
@@ -910,7 +914,7 @@ impl FuncBodyStream {
     {
         assert_eq!(memarg.memory, 0);
 
-        let reg = Register::Work(0);
+        let reg = self.work_reg(0);
 
         self.push_instr(Instr::PopI32Into(reg));
         self.op_stack.pop_i32();
@@ -946,7 +950,7 @@ impl FuncBodyStream {
 
 
     pub fn local_set(&mut self, local_index: u32, locals: &[(u32, Type)]) {
-        let reg = Register::Work(0);
+        let reg = self.work_reg(0);
 
         self.push_instr(Instr::SetLocalPtr(local_index));
 
@@ -994,7 +998,7 @@ impl FuncBodyStream {
 
     pub fn dyn_call(&mut self, table_index: u32, ty: &FuncType) {
         // Pop function index
-        self.push_instr(Instr::PopI32Into(Register::Work(0)));
+        self.push_instr(Instr::PopI32Into(self.work_reg(0)));
         self.op_stack.pop_i32();
 
         // Pop values from the stack to use as the arguments
@@ -1012,7 +1016,7 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushReturnAddress(return_addr.clone()));
 
                 self.set_terminator(Terminator::DynCall {
-                    reg: Register::Work(0),
+                    reg: self.work_reg(0),
                     table_index: Some(table_index),
                     return_addr,
                 });
@@ -1021,7 +1025,7 @@ impl FuncBodyStream {
             }
             BranchConv::Direct => {
                 // Jump to function
-                self.push_instr(Instr::DynCall(Register::Work(0), Some(table_index)));
+                self.push_instr(Instr::DynCall(self.work_reg(0), Some(table_index)));
             }
         }
     }
@@ -1047,9 +1051,9 @@ impl FuncBodyStream {
     pub fn make_i64_binop<F>(&mut self, func: F)
         where F: FnOnce(Register, Register, Register) -> Vec<Instr>
     {
-        let lhs = Register::Work(0);
-        let rhs = Register::Work(1);
-        let dst = Register::Work(2);
+        let lhs = self.work_reg(0);
+        let rhs = self.work_reg(1);
+        let dst = self.work_reg(2);
         self.op_stack.pop_i64();
         self.push_instr(Instr::PopI64Into(rhs));
         self.op_stack.pop_i64();
@@ -1087,23 +1091,23 @@ impl FuncBodyStream {
 
                 if imports.is_named_func(function_index, "turtle_x") {
                     self.op_stack.pop_i32();
-                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::X))
+                    self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                    self.push_instr(Instr::SetTurtleCoord(self.work_reg(0), Axis::X))
                 } else if imports.is_named_func(function_index, "turtle_y") {
                     self.op_stack.pop_i32();
-                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::Y))
+                    self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                    self.push_instr(Instr::SetTurtleCoord(self.work_reg(0), Axis::Y))
                 } else if imports.is_named_func(function_index, "turtle_z") {
                     self.op_stack.pop_i32();
-                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                    self.push_instr(Instr::SetTurtleCoord(Register::Work(0), Axis::Z))
+                    self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                    self.push_instr(Instr::SetTurtleCoord(self.work_reg(0), Axis::Z))
                 } else if imports.is_named_func(function_index, "turtle_set") {
                     self.op_stack.pop_i32();
-                    self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                    self.push_instr(Instr::SetTurtleBlock(Register::Work(0)));
+                    self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                    self.push_instr(Instr::SetTurtleBlock(self.work_reg(0)));
                 } else if imports.is_named_func(function_index, "turtle_get") {
-                    self.push_instr(Instr::TurtleGet(Register::Work(0)));
-                    self.push_instr(Instr::PushI32From(Register::Work(0)));
+                    self.push_instr(Instr::TurtleGet(self.work_reg(0)));
+                    self.push_instr(Instr::PushI32From(self.work_reg(0)));
                     self.op_stack.push_i32();
                 } else {
                     self.push_instr(Instr::Comment(format!("#   wasm:{}", get_entry_point(function_index))));
@@ -1135,7 +1139,7 @@ impl FuncBodyStream {
             Return => {
                 /*
                 for l in 0..local_count {
-                    let reg = Register::Work(l);
+                    let reg = self.work_reg(l);
                     self.push_instr(Instr::SetLocalPtr(l));
                     self.push_instr(Instr::LoadLocalI32(reg));
 
@@ -1173,7 +1177,7 @@ impl FuncBodyStream {
             LocalGet { local_index } => {
                 self.push_instr(Instr::SetLocalPtr(local_index));
 
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 let ty = get_local_ty(locals, local_index);
 
                 self.push_instr(Instr::load_local(reg, ty));
@@ -1215,9 +1219,9 @@ impl FuncBodyStream {
                 self.load_i32_16s(memarg, &wasm_file.memory);
             }
             I64Store { memarg } => {
-                let dreg_hi = Register::Work(2);
-                let dreg_lo = Register::Work(1);
-                let areg = Register::Work(0);
+                let dreg_hi = self.work_reg(2);
+                let dreg_lo = self.work_reg(1);
+                let areg = self.work_reg(0);
 
                 self.push_instr(Instr::PopI64Into(dreg_lo));
                 self.op_stack.pop_i64();
@@ -1235,10 +1239,10 @@ impl FuncBodyStream {
                 self.push_instr(Instr::StoreI32(dreg_hi, memarg.align));
             }
             I64Load { memarg } => {
-                let areg = Register::Work(0);
+                let areg = self.work_reg(0);
                 
-                let dreg_lo = Register::Work(1);
-                let dreg_hi = Register::Work(2);
+                let dreg_lo = self.work_reg(1);
+                let dreg_hi = self.work_reg(2);
 
                 self.push_instr(Instr::PopI32Into(areg));
                 self.op_stack.pop_i32();
@@ -1329,35 +1333,35 @@ impl FuncBodyStream {
 
             I32Ctz => {
                 self.op_stack.pop_i32();
-                self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                self.push_instr(Instr::I32Ctz(Register::Work(0)));
-                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                self.push_instr(Instr::I32Ctz(self.work_reg(0)));
+                self.push_instr(Instr::PushI32From(self.work_reg(0)));
                 self.op_stack.push_i32();
             }
             I32Clz => {
                 self.op_stack.pop_i32();
-                self.push_instr(Instr::PopI32Into(Register::Work(0)));
-                self.push_instr(Instr::I32Clz(Register::Work(0)));
-                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.push_instr(Instr::PopI32Into(self.work_reg(0)));
+                self.push_instr(Instr::I32Clz(self.work_reg(0)));
+                self.push_instr(Instr::PushI32From(self.work_reg(0)));
                 self.op_stack.push_i32();
             }
 
             I64Clz => {
                 self.op_stack.pop_i64();
-                self.push_instr(Instr::PopI64Into(Register::Work(0)));
-                self.push_instr(Instr::I64Clz { dst: Register::Work(1), src: Register::Work(0) });
-                self.push_instr(Instr::PushI64From(Register::Work(1)));
+                self.push_instr(Instr::PopI64Into(self.work_reg(0)));
+                self.push_instr(Instr::I64Clz { dst: self.work_reg(1), src: self.work_reg(0) });
+                self.push_instr(Instr::PushI64From(self.work_reg(1)));
                 self.op_stack.push_i64();
             }
             I64Ctz => {
                 self.op_stack.pop_i64();
-                self.push_instr(Instr::PopI64Into(Register::Work(0)));
-                self.push_instr(Instr::I64Ctz { dst: Register::Work(1), src: Register::Work(0) });
-                self.push_instr(Instr::PushI64From(Register::Work(1)));
+                self.push_instr(Instr::PopI64Into(self.work_reg(0)));
+                self.push_instr(Instr::I64Ctz { dst: self.work_reg(1), src: self.work_reg(0) });
+                self.push_instr(Instr::PushI64From(self.work_reg(1)));
                 self.op_stack.push_i64();
             }
             I64Popcnt => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(reg));
@@ -1377,9 +1381,11 @@ impl FuncBodyStream {
                 });
             }
             I64Sub => {
+                let ns = self.func_idx.0;
+
                 self.make_i64_binop(|dst, lhs, rhs| {
                     let mut instrs = Vec::new();
-                    for i in Instr::i64_neg(rhs) {
+                    for i in Instr::i64_neg(rhs, ns) {
                         instrs.push(i);
                     }
                     instrs.push(Instr::I64Add { dst, lhs, rhs });
@@ -1387,8 +1393,10 @@ impl FuncBodyStream {
                 });
             }
             I64Mul => {
+                let ns = self.func_idx.0;
+
                 self.make_i64_binop(|dst, lhs, rhs| {
-                    Instr::i64_mul(dst, lhs, rhs)
+                    Instr::i64_mul(dst, lhs, rhs, ns)
                 });
             }
             I64DivS => {
@@ -1507,9 +1515,9 @@ impl FuncBodyStream {
                 });
             }
             I64Eq => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1519,9 +1527,9 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
             I64Ne => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1532,9 +1540,9 @@ impl FuncBodyStream {
             }
 
             I64GtS => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1544,9 +1552,9 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
             I64GeS => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1557,9 +1565,9 @@ impl FuncBodyStream {
             }
 
             I64LtS => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1569,9 +1577,9 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
             I64LeS => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1584,9 +1592,9 @@ impl FuncBodyStream {
 
 
             I64LtU => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1596,9 +1604,9 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
             I64LeU => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1609,9 +1617,9 @@ impl FuncBodyStream {
 
             }
             I64GtU => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1621,9 +1629,9 @@ impl FuncBodyStream {
                 self.push_instr(Instr::PushI32From(dst));
             }
             I64GeU => {
-                let lhs = Register::Work(0);
-                let rhs = Register::Work(1);
-                let dst = Register::Work(2);
+                let lhs = self.work_reg(0);
+                let rhs = self.work_reg(1);
+                let dst = self.work_reg(2);
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(rhs));
                 self.op_stack.pop_i64();
@@ -1686,7 +1694,7 @@ impl FuncBodyStream {
             }
 
             I32Popcnt => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 self.push_instr(Instr::PopI32Into(reg));
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::I32Popcnt(reg.as_lo()));
@@ -1694,7 +1702,7 @@ impl FuncBodyStream {
                 self.op_stack.push_i32();
             }
             I32Extend8S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 self.push_instr(Instr::PopI32Into(reg));
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::I32Extend8S(reg));
@@ -1702,7 +1710,7 @@ impl FuncBodyStream {
                 self.op_stack.push_i32();
             }
             I32Extend16S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 self.push_instr(Instr::PopI32Into(reg));
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::I32Extend16S(reg));
@@ -1713,7 +1721,7 @@ impl FuncBodyStream {
 
 
             LocalTee { local_index } => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 let ty = get_local_ty(locals, local_index);
 
                 self.push_instr(Instr::pop_into(reg, ty));
@@ -1730,17 +1738,17 @@ impl FuncBodyStream {
                 self.op_stack.pop_value();
             }
             Select => {
-                let cond_reg = Register::Work(2);
+                let cond_reg = self.work_reg(2);
                 self.push_instr(Instr::PopI32Into(cond_reg));
                 self.op_stack.pop_i32();
 
 
                 let false_ty = self.op_stack.pop_value();
-                let false_reg = Register::Work(1);
+                let false_reg = self.work_reg(1);
                 self.push_instr(Instr::pop_into(false_reg, false_ty));
 
                 let true_ty = self.op_stack.pop_value();
-                let true_reg = Register::Work(0);
+                let true_reg = self.work_reg(0);
                 self.push_instr(Instr::pop_into(true_reg, true_ty));
 
                 if false_ty != true_ty {
@@ -1803,7 +1811,7 @@ impl FuncBodyStream {
                 let target_tys = outputs.clone();
 
                 // Condition
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 self.push_instr(Instr::PopI32Into(reg));
                 self.op_stack.pop_i32();
 
@@ -1834,7 +1842,7 @@ impl FuncBodyStream {
                     ty: inputs.clone(),
                 };
 
-                self.set_terminator(Terminator::BranchIf { t_name: then_target, f_name: else_target, cond: Register::Work(0) });
+                self.set_terminator(Terminator::BranchIf { t_name: then_target, f_name: else_target, cond: self.work_reg(0) });
 
                 let entry = ControlFlowEntry {
                     label: Some(Label::new(self.func_idx, next_block)),
@@ -1890,12 +1898,12 @@ impl FuncBodyStream {
             }
 
             I32Eqz => {
-                let val = Register::Work(0);
+                let val = self.work_reg(0);
 
                 self.push_instr(Instr::PopI32Into(val));
                 self.op_stack.pop_i32();
 
-                let cond = Register::Work(1);
+                let cond = self.work_reg(1);
 
                 self.push_instr(Instr::I32Eqz { val, cond });
 
@@ -1903,12 +1911,12 @@ impl FuncBodyStream {
                 self.op_stack.push_i32();
             }
             I64Eqz => {
-                let val = Register::Work(0);
+                let val = self.work_reg(0);
 
                 self.push_instr(Instr::PopI64Into(val));
                 self.op_stack.pop_i64();
 
-                let cond = Register::Work(1);
+                let cond = self.work_reg(1);
 
                 self.push_instr(Instr::I64Eqz { val, cond });
 
@@ -1943,13 +1951,13 @@ impl FuncBodyStream {
 
             I32WrapI64 => {
                 self.op_stack.pop_i64();
-                self.push_instr(Instr::PopI64Into(Register::Work(0)));
-                self.push_instr(Instr::PushI32From(Register::Work(0)));
+                self.push_instr(Instr::PopI64Into(self.work_reg(0)));
+                self.push_instr(Instr::PushI32From(self.work_reg(0)));
                 self.op_stack.push_i32();
             }
 
             I64ExtendI32S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::pop_into(reg, Type::I32));
@@ -1959,7 +1967,7 @@ impl FuncBodyStream {
 
             }
             I64Extend32S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::pop_into(reg, Type::I64));
@@ -1968,7 +1976,7 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
             }
             I64Extend16S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(reg));
@@ -1978,7 +1986,7 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
             }
             I64Extend8S => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i64();
                 self.push_instr(Instr::PopI64Into(reg));
@@ -1988,7 +1996,7 @@ impl FuncBodyStream {
                 self.op_stack.push_i64();
             }
             I64ExtendI32U => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
                 
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::pop_into(reg, Type::I32));
@@ -2042,7 +2050,7 @@ impl FuncBodyStream {
                 self.mark_unreachable();
             }
             BrIf { relative_depth } => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.push_instr(Instr::PopI32Into(reg));
                 self.op_stack.pop_i32();
@@ -2060,7 +2068,7 @@ impl FuncBodyStream {
                 self.bb_index = next_block;
             }
             BrTable { table } => {
-                let reg = Register::Work(0);
+                let reg = self.work_reg(0);
 
                 self.op_stack.pop_i32();
                 self.push_instr(Instr::PopI32Into(reg));

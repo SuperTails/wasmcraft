@@ -150,34 +150,52 @@ impl str::FromStr for HalfRegister {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        /*
-        let split_half = |w: &str| {
-            if let Some(w) = w.strip_suffix("%lo") {
-                Ok((w, false))
-            } else if let Some(w) = w.strip_suffix("%hi") {
-                Ok((w, true))
-            } else {
-                Err(format!("invalid register {}", s))
-            }
-        };
-        */
+        let mut parts = s.split('%');
 
-        let (s, is_hi) = Self::split_half(s)?;
-        
-        if let Some(s) = s.strip_prefix("%work%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok(Self(Register::Work(idx), is_hi))
-        } else if let Some(s) = s.strip_prefix("%param%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok(Self(Register::Param(idx), is_hi))
-        } else if let Some(s) = s.strip_prefix("%return%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok(Self(Register::Return(idx), is_hi))
-        } else if let Some(s) = s.strip_prefix("%stack%") {
-            let idx = s.parse::<u32>().map_err(|e| e.to_string())?;
-            Ok(Self(Register::Stack(idx), is_hi))
-        } else {
-            Err(format!("invalid register {}", s))
+        if parts.next() != Some("") {
+            return Err(s.to_string())
+        }
+
+        let name = parts.next().ok_or_else(|| s.to_string())?;
+
+        let idx = parts.next().ok_or_else(|| s.to_string())?;
+        let idx = idx.parse::<u32>().map_err(|_| s.to_string())?;
+
+        let half = parts.next().ok_or_else(|| s.to_string())?;
+        let half = match half {
+            "hi" => Half::Hi,
+            "lo" => Half::Lo,
+            _ => return Err(s.to_string()),
+        };
+
+        match name {
+            "work" => {
+                let ns = parts.next().ok_or_else(|| s.to_string())?;
+                let ns = ns.parse::<u32>().map_err(|_| s.to_string())?;
+
+                Ok(Self(Register::Work(idx, ns), half))
+            }
+            "param" => {
+                if parts.next().is_some() { return Err(s.to_string()); }
+
+                Ok(Self(Register::Param(idx), half))
+            }
+            "return" => {
+                if parts.next().is_some() { return Err(s.to_string()); }
+
+                Ok(Self(Register::Return(idx), half))
+            }
+            "stack" => {
+                if parts.next().is_some() { return Err(s.to_string()); }
+
+                Ok(Self(Register::Stack(idx), half))
+            }
+            "temp" => {
+                if parts.next().is_some() { return Err(s.to_string()); }
+
+                Ok(Self(Register::Temp(idx), half))
+            }
+            _ => Err(s.to_string()),
         }
     }
 }
@@ -289,11 +307,12 @@ impl OpStack {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Register {
-    Work(u32),
+    Work(u32, u32),
     Param(u32),
     Return(u32),
     Stack(u32),
     Global(u32),
+    Temp(u32),
 }
 
 impl Register {
@@ -307,8 +326,8 @@ impl Register {
 
     pub fn get_lo(&self) -> String {
         match self {
-            Register::Work(i) => {
-                format!("%work%{}%lo", i)
+            Register::Work(i, ns) => {
+                format!("%work%{}%lo%{}", i, ns)
             }
             Register::Param(i) => {
                 format!("%param%{}%lo", i)
@@ -322,13 +341,16 @@ impl Register {
             Register::Global(i) => {
                 format!("%global%{}%lo", i)
             }
+            Register::Temp(i) => {
+                format!("%temp%{}%lo", i)
+            }
         }
     }
 
     pub fn get_hi(&self) -> String {
         match self {
-            Register::Work(i) => {
-                format!("%work%{}%hi", i)
+            Register::Work(i, ns) => {
+                format!("%work%{}%hi%{}", i, ns)
             }
             Register::Param(i) => {
                 format!("%param%{}%hi", i)
@@ -341,6 +363,9 @@ impl Register {
             }
             Register::Global(i) => {
                 format!("%global%{}%hi", i)
+            }
+            Register::Temp(i) => {
+                format!("%temp%{}%hi", i)
             }
         }
     }
@@ -1309,9 +1334,9 @@ mod test {
         let expected = (lhs as u64) < (rhs as u64);
 
         let mut instrs = Vec::new();
-        instrs.extend(Instr::set_i64_const(Register::Work(0), lhs));
-        instrs.extend(Instr::set_i64_const(Register::Work(1), rhs));
-        instrs.push(Instr::I64UComp { dst: Register::Return(0), lhs: Register::Work(0), op: Relation::LessThan, rhs: Register::Work(1) });
+        instrs.extend(Instr::set_i64_const(Register::Temp(0), lhs));
+        instrs.extend(Instr::set_i64_const(Register::Temp(1), rhs));
+        instrs.push(Instr::I64UComp { dst: Register::Return(0), lhs: Register::Temp(0), op: Relation::LessThan, rhs: Register::Temp(1) });
 
         test_mir(instrs, Some(expected as i32));
     }
@@ -1320,9 +1345,9 @@ mod test {
         let expected = lhs < rhs;
 
         let mut instrs = Vec::new();
-        instrs.extend(Instr::set_i64_const(Register::Work(0), lhs));
-        instrs.extend(Instr::set_i64_const(Register::Work(1), rhs));
-        instrs.push(Instr::I64SComp { dst: Register::Return(0), lhs: Register::Work(0), op: Relation::LessThan, rhs: Register::Work(1) });
+        instrs.extend(Instr::set_i64_const(Register::Work(0, 0), lhs));
+        instrs.extend(Instr::set_i64_const(Register::Work(1, 0), rhs));
+        instrs.push(Instr::I64SComp { dst: Register::Return(0), lhs: Register::Work(0, 0), op: Relation::LessThan, rhs: Register::Work(1, 0) });
 
         test_mir(instrs, Some(expected as i32));
     }
@@ -1357,7 +1382,7 @@ mod test {
 
         let mut instrs = Vec::new();
         instrs.extend(Instr::set_i64_const(Register::Return(0), val));
-        instrs.extend(Instr::i64_neg(Register::Return(0)));
+        instrs.extend(Instr::i64_neg(Register::Return(0), 0));
 
         test_mir(instrs, Some(expected));
     }
@@ -1366,9 +1391,9 @@ mod test {
         let expected = lhs.wrapping_mul(rhs);
 
         let mut instrs = Vec::new();
-        instrs.extend(Instr::set_i64_const(Register::Work(0), lhs));
-        instrs.extend(Instr::set_i64_const(Register::Work(1), rhs));
-        instrs.extend(Instr::i64_mul(Register::Return(0), Register::Work(0), Register::Work(1)));
+        instrs.extend(Instr::set_i64_const(Register::Work(0, 0), lhs));
+        instrs.extend(Instr::set_i64_const(Register::Work(1, 0), rhs));
+        instrs.extend(Instr::i64_mul(Register::Return(0), Register::Work(0, 0), Register::Work(1, 0), 0));
 
         test_mir(instrs, Some(expected));
     }
@@ -1455,27 +1480,27 @@ mod test {
 
         let prelude = vec![
             Instr::PushI32Const(4),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
             
             Instr::PushI32Const(val1),
-            Instr::PopI32Into(Register::Work(1)),
-            Instr::StoreI32(Register::Work(1), 2),
+            Instr::PopI32Into(Register::Work(1, 0)),
+            Instr::StoreI32(Register::Work(1, 0), 2),
 
             Instr::PushI32Const(8),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
             
             Instr::PushI32Const(val2),
-            Instr::PopI32Into(Register::Work(1)),
-            Instr::StoreI32(Register::Work(1), 2),
+            Instr::PopI32Into(Register::Work(1, 0)),
+            Instr::StoreI32(Register::Work(1, 0), 2),
         ];
 
         let mut load_byte = prelude.clone();
         load_byte.extend([
             Instr::PushI32Const(5),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::LoadI32_8U(Register::Return(0), 0),
         ]);
@@ -1484,8 +1509,8 @@ mod test {
         let mut load_halfword_unalign = prelude.clone();
         load_halfword_unalign.extend([
             Instr::PushI32Const(5),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
@@ -1494,8 +1519,8 @@ mod test {
         let mut load_halfword_align = prelude.clone();
         load_halfword_align.extend([
             Instr::PushI32Const(6),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::LoadI32_16U(Register::Return(0), 0),
         ]);
@@ -1504,8 +1529,8 @@ mod test {
         let mut load_word_unalign = prelude;
         load_word_unalign.extend([
             Instr::PushI32Const(7),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::LoadI32(Register::Return(0), 0),
            
@@ -1517,16 +1542,16 @@ mod test {
     fn load_store() {
         let instrs = vec![
             Instr::PushI32Const(4),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::PushI32Const(42),
-            Instr::PopI32Into(Register::Work(1)),
-            Instr::StoreI32(Register::Work(1), 2),
+            Instr::PopI32Into(Register::Work(1, 0)),
+            Instr::StoreI32(Register::Work(1, 0), 2),
 
             Instr::PushI32Const(4),
-            Instr::PopI32Into(Register::Work(0)),
-            Instr::SetMemPtr(Register::Work(0).as_lo().into()),
+            Instr::PopI32Into(Register::Work(0, 0)),
+            Instr::SetMemPtr(Register::Work(0, 0).as_lo().into()),
 
             Instr::LoadI32(Register::Return(0), 2),
         ];
@@ -1540,23 +1565,23 @@ mod test {
             Instr::PushFrame(2),
 
             Instr::PushI32Const(42),
-            Instr::PopI32Into(Register::Work(0)),
+            Instr::PopI32Into(Register::Work(0, 0)),
             Instr::SetLocalPtr(0),
-            Instr::StoreLocalI32(Register::Work(0)),
+            Instr::StoreLocalI32(Register::Work(0, 0)),
 
             Instr::PushI32Const(27),
-            Instr::PopI32Into(Register::Work(0)),
+            Instr::PopI32Into(Register::Work(0, 0)),
             Instr::SetLocalPtr(1),
-            Instr::StoreLocalI32(Register::Work(0)),
+            Instr::StoreLocalI32(Register::Work(0, 0)),
 
             Instr::SetLocalPtr(0),
-            Instr::LoadLocalI32(Register::Work(0)),
+            Instr::LoadLocalI32(Register::Work(0, 0)),
             Instr::SetLocalPtr(1),
-            Instr::LoadLocalI32(Register::Work(1)),
+            Instr::LoadLocalI32(Register::Work(1, 0)),
 
-            Instr::I32Op { dst: Register::Work(2).as_lo(), lhs: Register::Work(0).as_lo(), op: "/=", rhs: Register::Work(1).as_lo().into() },
+            Instr::I32Op { dst: Register::Work(2, 0).as_lo(), lhs: Register::Work(0, 0).as_lo(), op: "/=", rhs: Register::Work(1, 0).as_lo().into() },
 
-            Instr::PushI32From(Register::Work(2)),
+            Instr::PushI32From(Register::Work(2, 0)),
             Instr::PopI32Into(Register::Return(0)),
 
             Instr::PopFrame(2),

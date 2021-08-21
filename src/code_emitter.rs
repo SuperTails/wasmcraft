@@ -158,7 +158,8 @@ impl<'a> CodeEmitter<'a> {
                 self.jump_end();
             }
             &Terminator::DynBranch(reg, table_idx) => {
-                assert_eq!(reg, Register::Work(0));
+                // TODO: Maybe use a real register for this
+                assert_eq!(reg, Register::Temp(0));
 
                 self.emit_stack_save();
 
@@ -409,7 +410,7 @@ impl<'a> CodeEmitter<'a> {
             }
 
             I64Add { dst, lhs, rhs } => {
-                let carry = Register::Work(10).as_lo();
+                let carry = Register::Temp(10).as_lo();
 
                 assert_ne!(*dst, carry.0);
                 assert_ne!(*lhs, carry.0);
@@ -476,18 +477,18 @@ impl<'a> CodeEmitter<'a> {
                     op = Relation::LessThanEq;
                 }
 
-                assert!(!matches!(lhs, Register::Work(3 | 4 | 5 | 6)));
-                assert!(!matches!(rhs, Register::Work(3 | 4 | 5 | 6)));
-                assert!(!matches!(dst, Register::Work(3 | 4 | 5 | 6)));
+                assert!(!matches!(lhs, Register::Temp(3 | 4 | 5 | 6)));
+                assert!(!matches!(rhs, Register::Temp(3 | 4 | 5 | 6)));
+                assert!(!matches!(dst, Register::Temp(3 | 4 | 5 | 6)));
 
                 assert_ne!(dst, lhs);
                 assert_ne!(dst, rhs);
 
-                let hi_is_lesser = Register::Work(3).as_lo();
-                let hi_is_greater = Register::Work(4).as_lo();
-                let hi_is_equal = Register::Work(5).as_lo();
+                let hi_is_lesser = Register::Temp(3).as_lo();
+                let hi_is_greater = Register::Temp(4).as_lo();
+                let hi_is_equal = Register::Temp(5).as_lo();
 
-                let lo_is_lesser = Register::Work(6).as_lo();
+                let lo_is_lesser = Register::Temp(6).as_lo();
 
                 self.make_i32_op(lhs.as_hi(), "ltu", rhs.as_hi().into(), hi_is_lesser);
                 self.make_i32_op(lhs.as_hi(), "gtu", rhs.as_hi().into(), hi_is_greater);
@@ -934,7 +935,7 @@ impl<'a> CodeEmitter<'a> {
 
                 // Minecraft division always rounds towards negative infinity, so we need to correct for that
 
-                let rem = Register::Work(21).as_lo();
+                let rem = Register::Temp(21).as_lo();
 
                 self.body.push(format!("scoreboard players operation {} reg = {} reg", rem, lhs));
                 self.body.push(format!("scoreboard players operation {} reg %= {} reg ", rem, rhs));
@@ -946,13 +947,13 @@ impl<'a> CodeEmitter<'a> {
                 self.body.push(format!("execute if score {} reg matches ..-1 if score {} reg matches 0.. unless score {} reg matches 0..0 run scoreboard players add {} reg 1", rhs, lhs, rem, dst));
             }
             "/=u" => {
-                let d1 = Register::Work(30).as_lo();
-                let r1 = Register::Work(31).as_lo();
-                let d2 = Register::Work(32).as_lo();
-                let r2 = Register::Work(33).as_lo();
-                let d3 = Register::Work(34).as_lo();
-                let is_gtu = Register::Work(35).as_lo();
-                let lhs_lo = Register::Work(36).as_lo();
+                let d1 = Register::Temp(30).as_lo();
+                let r1 = Register::Temp(31).as_lo();
+                let d2 = Register::Temp(32).as_lo();
+                let r2 = Register::Temp(33).as_lo();
+                let d3 = Register::Temp(34).as_lo();
+                let is_gtu = Register::Temp(35).as_lo();
+                let lhs_lo = Register::Temp(36).as_lo();
 
                 assert_ne!(lhs, dst);
                 if let RegOrConst::Reg(r) = rhs {
@@ -1439,7 +1440,7 @@ fn create_return_jumper(basic_blocks: &[MirBasicBlock]) -> String {
     let mut pool = ConstantPool::new();
 
     let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
-    emitter.lower_branch_table(Register::Work(0), targets, None);
+    emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
     assert!(pool.is_empty());
@@ -1463,7 +1464,7 @@ fn create_dyn_jumper(table: &crate::state::Table) -> String {
     let mut pool = ConstantPool::new();
 
     let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
-    emitter.lower_branch_table(Register::Work(0), targets, None);
+    emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
     assert!(pool.is_empty());

@@ -534,10 +534,10 @@ impl State {
                     };
 
                     // TODO: This should be a part of the instruction, probably?
-                    self.registers.clobber_pair(Register::Work(3));
-                    self.registers.clobber_pair(Register::Work(4));
-                    self.registers.clobber_pair(Register::Work(5));
-                    self.registers.clobber_pair(Register::Work(6));
+                    self.registers.clobber_pair(Register::Temp(3));
+                    self.registers.clobber_pair(Register::Temp(4));
+                    self.registers.clobber_pair(Register::Temp(5));
+                    self.registers.clobber_pair(Register::Temp(6));
 
                     println!("l: {:#X}, r: {:#X}", l, r);
                     self.registers.set_i32(dst, d as i32);
@@ -735,7 +735,7 @@ impl State {
                     self.registers.set_i64(dst, d as i64);
 
                     for i in 0..6 {
-                        self.registers.clobber_pair(Register::Work(i));
+                        self.registers.clobber_pair(Register::Temp(i));
                     }
                 }
                 &I64DivS { dst, lhs, rhs } => {
@@ -745,7 +745,7 @@ impl State {
                     self.registers.set_i64(dst, d);
 
                     for i in 0..6 {
-                        self.registers.clobber_pair(Register::Work(i));
+                        self.registers.clobber_pair(Register::Temp(i));
                     }
                 }
                 &I64RemS { dst, lhs, rhs } => {
@@ -755,7 +755,7 @@ impl State {
                     self.registers.set_i64(dst, d);
 
                     for i in 0..6 {
-                        self.registers.clobber_pair(Register::Work(i));
+                        self.registers.clobber_pair(Register::Temp(i));
                     }
                 }
                 &I64RemU { dst, lhs, rhs } => {
@@ -765,7 +765,7 @@ impl State {
                     self.registers.set_i64(dst, d as i64);
 
                     for i in 0..6 {
-                        self.registers.clobber_pair(Register::Work(i));
+                        self.registers.clobber_pair(Register::Temp(i));
                     }
                 }
 
