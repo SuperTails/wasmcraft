@@ -282,6 +282,21 @@ impl<'a> ConstProp<'a> {
                 self.registers.set_half(reg.as_lo(), v.map(|val| val as i16 as i32));
             }, 
             
+            Instr::SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
+                let cond = read(self.registers.get_half(cond_reg.as_lo()))?;
+
+                if let PropWord::Exact(cond) = cond {
+                    let result = if cond != 0 {
+                        read(self.registers.get_half(true_reg.as_lo()))?
+                    } else {
+                        read(self.registers.get_half(false_reg.as_lo()))?
+                    };
+
+                    self.registers.set_half(dst_reg.as_lo(), result);
+                } else {
+                    self.registers.set_half(dst_reg.as_lo(), PropWord::Unknown);
+                }
+            }
 
             i => {
                 // TODO:

@@ -1,5 +1,5 @@
 use wasmparser::{Data, DataKind, Element, Export, FuncType, Global, GlobalType, Import, ImportSectionEntryType, MemoryType, Operator, Parser, Payload, TableType, Type, TypeDef, TypeOrFuncType};
-use crate::{BlockPos, CodeFuncIdx, Register, eval_init_expr};
+use crate::{CodeFuncIdx, Register, eval_init_expr};
 use std::convert::TryInto;
 
 pub struct DataList<'a> {
