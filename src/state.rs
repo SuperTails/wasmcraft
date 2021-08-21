@@ -475,7 +475,9 @@ impl State {
                     let v = self.registers.get_i32(*r)?;
                     println!("TODO: Set block {} at {:?}", v, self.turtle);
                 }
-                TurtleGet(_r) => todo!(),
+                TurtleGet(r) => {
+                    self.registers.set_half(r.as_lo(), 0);
+                },
 
                 SetLocalPtr(l) => {
                     self.local_ptr = *l;

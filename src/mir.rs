@@ -450,8 +450,23 @@ impl Instr {
             Instr::I64ShrS { .. } |
             Instr::I32MulTo64 { .. } => InstrUses::All(Usage::ReadWrite),
             Instr::I32Op { dst, lhs, op, rhs } => {
-                // TODO:
-                InstrUses::All(Usage::ReadWrite)
+                let mut uses = InstrUses::none();
+
+                match *op {
+                    "+=" | "-=" | "*=" | "%=" | "&=" | "|=" | "^=" | "shl" | "shru" | "rotl" | "rotr" |
+                    "gts" | "ges" | "les" | "lts" | "==" | "!=" => {
+                        if let RegOrConst::Reg(rhs) = rhs {
+                            uses.add(*rhs, Usage::Read);
+                        }
+
+                        uses.add(*lhs, Usage::Read);
+                        uses.add(*dst, Usage::Write);
+                    }
+                    // TODO:
+                    _ => return InstrUses::All(Usage::ReadWrite),
+                }
+                
+                uses
             },
             Instr::AddI32Const(reg, _) => InstrUses::one(*reg, Usage::ReadWrite),
             Instr::I32Extend8S(reg) => InstrUses::one(reg.as_lo(), Usage::ReadWrite),

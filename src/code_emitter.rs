@@ -257,9 +257,9 @@ impl<'a> CodeEmitter<'a> {
                     RegOrConst::Const(c) => {
                         self.body.push(format!("scoreboard players set %ptr reg {}", *c));
 
-                        let z = (*c) % 8 + 8;
-                        let y = (*c / 8) % 256;
-                        let x = (*c / (8 * 256)) % 8;
+                        let z = (*c / 4) % 8 + 8;
+                        let y = (*c / (4 * 8)) % 256;
+                        let x = (*c / (4 * 8 * 256)) % 8;
                         self.body.push(format!("execute as @e[tag=memoryptr] run tp @s {} {} {}", x, y, z));
                     }
                 } 
@@ -1053,11 +1053,26 @@ impl<'a> CodeEmitter<'a> {
                 self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst));
             }
             "shl" => {
-                self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
-                self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
-                self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
-                self.body.push("function intrinsic:shl".to_string());
-                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+                match rhs {
+                    RegOrConst::Reg(rhs) => {
+                        self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
+                        self.body.push(format!("scoreboard players operation %param1%0 reg = {} reg", rhs));
+                        self.body.push("scoreboard players operation %param1%0 reg %= %%32 reg".to_string());
+                        self.body.push("function intrinsic:shl".to_string());
+                        self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst));
+                    }
+                    RegOrConst::Const(mut rhs) => {
+                        if dst != lhs {
+                            self.body.push(format!("scoreboard players operation {} reg = {} reg", dst, lhs));
+                        }
+
+                        rhs %= 32;
+
+                        if rhs != 0 {
+                            self.body.push(format!("scoreboard players operation {} reg *= %%{} reg", lhs, 1 << rhs));
+                        }
+                    }
+                }
             }
             "shru" => {
                 self.body.push(format!("scoreboard players operation %param0%0 reg = {} reg", lhs));
