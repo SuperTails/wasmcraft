@@ -50,10 +50,12 @@ pub struct CodeEmitter<'a> {
     state_info: Option<&'a StateInfo>,
 
     constant_pool: &'a mut ConstantPool,
+
+    func_idx: CodeFuncIdx,
 }
 
 impl<'a> CodeEmitter<'a> {
-    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>, constant_pool: &'a mut ConstantPool) -> Self {
+    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx) -> Self {
         if bb_idx.is_none() {
             assert!(!use_virt_stack);
             assert!(!insert_sync);
@@ -76,7 +78,8 @@ impl<'a> CodeEmitter<'a> {
             insert_sync,
             state_info,
             label,
-            constant_pool
+            constant_pool,
+            func_idx,
         };
         
         emitter.emit_sync();
@@ -96,12 +99,12 @@ impl<'a> CodeEmitter<'a> {
         self.body
     }
 
-    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, constant_pool: &'a mut ConstantPool) -> Vec<String> {
+    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx) -> Vec<String> {
         println!("\nSTARTING {:?}", basic_block.label);
         println!("{:?}", state_info);
 
         // The real stack has 1 entry: the return address
-        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()), constant_pool);
+        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()), constant_pool, func_idx);
         for i in basic_block.instrs.iter() {
             emitter.emit(i);
         }
@@ -760,7 +763,7 @@ impl<'a> CodeEmitter<'a> {
 
             self.op_stack.push_i32();
 
-            let stack_reg = Register::Stack(idx as u32).as_lo();
+            let stack_reg = Register::Stack(idx as u32, self.func_idx.0).as_lo();
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg, value));
         } else {
             self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value {}", value));
@@ -776,8 +779,8 @@ impl<'a> CodeEmitter<'a> {
 
             self.op_stack.push_i64();
 
-            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
-            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            let stack_reg_lo = Register::Stack(idx as u32, self.func_idx.0).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32, self.func_idx.0).as_hi();
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg_lo, value as i32));
             self.body.push(format!("scoreboard players set {} reg {}", stack_reg_hi, (value >> 32) as i32));
         } else {
@@ -802,7 +805,7 @@ impl<'a> CodeEmitter<'a> {
             self.op_stack.push_i32();
 
             // This is just a register copy
-            let stack_reg = Register::Stack(idx as u32).as_lo();
+            let stack_reg = Register::Stack(idx as u32, self.func_idx.0).as_lo();
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg, reg.as_lo()));
         } else {
             self.op_stack.push_i32();
@@ -818,8 +821,8 @@ impl<'a> CodeEmitter<'a> {
             self.op_stack.push_i64();
 
             // This is just a register copy
-            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
-            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            let stack_reg_lo = Register::Stack(idx as u32, self.func_idx.0).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32, self.func_idx.0).as_hi();
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_lo, reg.as_lo()));
             self.body.push(format!("scoreboard players operation {} reg = {} reg", stack_reg_hi, reg.as_hi()));
         } else {
@@ -847,7 +850,7 @@ impl<'a> CodeEmitter<'a> {
             Self::pop_i32_into(reg, &mut self.body);
         } else {
             // This is just a register copy
-            let stack_reg = Register::Stack(idx as u32).as_lo();
+            let stack_reg = Register::Stack(idx as u32, self.func_idx.0).as_lo();
             self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_lo(), stack_reg));
         }
     }
@@ -862,8 +865,8 @@ impl<'a> CodeEmitter<'a> {
             Self::pop_i64_into(reg, &mut self.body);
         } else {
             // This is just a register copy
-            let stack_reg_lo = Register::Stack(idx as u32).as_lo();
-            let stack_reg_hi = Register::Stack(idx as u32).as_hi();
+            let stack_reg_lo = Register::Stack(idx as u32, self.func_idx.0).as_lo();
+            let stack_reg_hi = Register::Stack(idx as u32, self.func_idx.0).as_hi();
             self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_lo(), stack_reg_lo));
             self.body.push(format!("scoreboard players operation {} reg = {} reg", reg.as_hi(), stack_reg_hi));
         }
@@ -882,7 +885,7 @@ impl<'a> CodeEmitter<'a> {
     pub fn emit_stack_save_to(&mut self, target_size: usize) {
         assert!(self.op_stack.real_size <= target_size);
         for idx in self.op_stack.real_size..target_size {
-            let reg = Register::Stack(idx as u32);
+            let reg = Register::Stack(idx as u32, self.func_idx.0);
             let ty = self.op_stack.stack.0[idx];
 
             Self::lower_push_from(reg, ty, &mut self.body);
@@ -1439,7 +1442,8 @@ fn create_return_jumper(basic_blocks: &[MirBasicBlock]) -> String {
 
     let mut pool = ConstantPool::new();
 
-    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
+    // FIXME: FUNCTION INDEX
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0));
     emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
@@ -1463,7 +1467,8 @@ fn create_dyn_jumper(table: &crate::state::Table) -> String {
 
     let mut pool = ConstantPool::new();
 
-    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool);
+    // FIXME: FUNCTION INDEX
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0));
     emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
@@ -1710,7 +1715,8 @@ fn create_caller_function(mc_functions: &[(String, String)], index: CodeFuncIdx,
 
     let mut pool = ConstantPool::new();
 
-    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None, &mut pool);
+    // FIXME: FUNCTION INDEX
+    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None, &mut pool, CodeFuncIdx(0));
 
     assert!(pool.is_empty());
 

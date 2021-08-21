@@ -91,7 +91,7 @@ impl<T> BasicBlock<T> {
 impl MirBasicBlock {
     fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>, pool: &mut ConstantPool) -> BasicBlock<String> {
         // TODO: Should I use a virtual stack always?
-        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info, pool);
+        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info, pool, self.label.func_idx);
 
         BasicBlock {
             op_stack: self.op_stack.clone(),
@@ -175,6 +175,12 @@ impl str::FromStr for HalfRegister {
 
                 Ok(Self(Register::Work(idx, ns), half))
             }
+            "stack" => {
+                let ns = parts.next().ok_or_else(|| s.to_string())?;
+                let ns = ns.parse::<u32>().map_err(|_| s.to_string())?;
+
+                Ok(Self(Register::Stack(idx, ns), half))
+            }
             "param" => {
                 if parts.next().is_some() { return Err(s.to_string()); }
 
@@ -184,11 +190,6 @@ impl str::FromStr for HalfRegister {
                 if parts.next().is_some() { return Err(s.to_string()); }
 
                 Ok(Self(Register::Return(idx), half))
-            }
-            "stack" => {
-                if parts.next().is_some() { return Err(s.to_string()); }
-
-                Ok(Self(Register::Stack(idx), half))
             }
             "temp" => {
                 if parts.next().is_some() { return Err(s.to_string()); }
@@ -310,7 +311,7 @@ pub enum Register {
     Work(u32, u32),
     Param(u32),
     Return(u32),
-    Stack(u32),
+    Stack(u32, u32),
     Global(u32),
     Temp(u32),
 }
@@ -335,8 +336,8 @@ impl Register {
             Register::Return(i) => {
                 format!("%return%{}%lo", i)
             }
-            Register::Stack(i) => {
-                format!("%stack%{}%lo", i)
+            Register::Stack(i, ns) => {
+                format!("%stack%{}%lo%{}", i, ns)
             }
             Register::Global(i) => {
                 format!("%global%{}%lo", i)
@@ -358,8 +359,8 @@ impl Register {
             Register::Return(i) => {
                 format!("%return%{}%hi", i)
             }
-            Register::Stack(i) => {
-                format!("%stack%{}%hi", i)
+            Register::Stack(i, ns) => {
+                format!("%stack%{}%hi%{}", i, ns)
             }
             Register::Global(i) => {
                 format!("%global%{}%hi", i)
