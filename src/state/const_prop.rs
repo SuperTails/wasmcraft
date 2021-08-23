@@ -33,7 +33,6 @@ pub(crate) struct ConstProp<'a> {
     registers: RegFile<PropWord>,
     stack: Stack<PropWord>,
 
-    local_ptr: PropWord,
     locals: Vec<(PropWord, PropWord)>,
 
     actions: Vec<OptAction>,
@@ -64,7 +63,6 @@ impl<'a> ConstProp<'a> {
             block,
             registers: RegFile::new(),
             stack,
-            local_ptr: PropWord::Unknown,
             locals: Vec::new(),
             actions: Vec::new(),
             pc: 0,
@@ -145,58 +143,35 @@ impl<'a> ConstProp<'a> {
                 self.registers.set_half(*dst, val);
             },
 
-            Instr::SetLocalPtr(p) => {
-                self.local_ptr = PropWord::Exact(*p as i32);
-            }
-            Instr::LoadLocalI32(reg) => {
-                if let PropWord::Exact(ptr) = self.local_ptr {
-                    if self.locals.len() <= ptr as usize {
-                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0)
-                } else {
-                    println!("Stopping at LoadLocalI32");
-		    return Ok(true);
+            &Instr::LoadLocalI32(reg, idx) => {
+                if self.locals.len() <= idx as usize {
+                    self.locals.resize(idx as usize + 1, (PropWord::Unknown, PropWord::Unknown))
                 }
-            }
-            Instr::StoreLocalI32(reg) => {
-                if let PropWord::Exact(ptr) = self.local_ptr {
-                    if self.locals.len() <= ptr as usize {
-                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
 
-                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
-                } else {
-                    // Clobber all of them since we don't know which one is modified
-                    self.locals.clear();
-                }
+                self.registers.set_half(reg.as_lo(), self.locals[idx as usize].0)
             }
-            Instr::LoadLocalI64(reg) => {
-                if let PropWord::Exact(ptr) = self.local_ptr {
-                    if self.locals.len() <= ptr as usize {
-                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.registers.set_half(reg.as_lo(), self.locals[ptr as usize].0);
-                    self.registers.set_half(reg.as_hi(), self.locals[ptr as usize].0);
-                } else {
-                    println!("Stopping at LoadLocalI64");
-                    return Ok(true);
+            &Instr::StoreLocalI32(reg, idx) => {
+                if self.locals.len() <= idx as usize {
+                    self.locals.resize(idx as usize + 1, (PropWord::Unknown, PropWord::Unknown))
                 }
+
+                self.locals[idx as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
             }
-            Instr::StoreLocalI64(reg) => {
-                if let PropWord::Exact(ptr) = self.local_ptr {
-                    if self.locals.len() <= ptr as usize {
-                        self.locals.resize(ptr as usize + 1, (PropWord::Unknown, PropWord::Unknown))
-                    }
-
-                    self.locals[ptr as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
-                    self.locals[ptr as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
-                } else {
-                    // Clobber all of them since we don't know which one is modified
-                    self.locals.clear();
+            &Instr::LoadLocalI64(reg, idx) => {
+                if self.locals.len() <= idx as usize {
+                    self.locals.resize(idx as usize + 1, (PropWord::Unknown, PropWord::Unknown))
                 }
+
+                self.registers.set_half(reg.as_lo(), self.locals[idx as usize].0);
+                self.registers.set_half(reg.as_hi(), self.locals[idx as usize].1);
+            }
+            &Instr::StoreLocalI64(reg, idx) => {
+                if self.locals.len() <= idx as usize {
+                    self.locals.resize(idx as usize + 1, (PropWord::Unknown, PropWord::Unknown))
+                }
+
+                self.locals[idx as usize].0 = read(self.registers.get_half(reg.as_lo()))?;
+                self.locals[idx as usize].1 = read(self.registers.get_half(reg.as_hi()))?;
             }
             Instr::PushFrame(_) => {
                 self.locals = Vec::new();

@@ -917,7 +917,6 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     \n\
     # Remove old armor stand pointers\n\
     kill @e[tag=memoryptr]\n\
-    kill @e[tag=localptr]\n\
     kill @e[tag=frameptr]\n\
     kill @e[tag=stackptr]\n\
     kill @e[tag=globalptr]\n\
@@ -926,7 +925,6 @@ fn count_intrinsic(name: &str, params: &[(&str, i32)]) -> usize {
     \n\
     # Add armor stand pointers\n\
     summon minecraft:armor_stand 0 0 8 {Marker:1b,Tags:[\"memoryptr\"],CustomName:'\"memoryptr\"',CustomNameVisible:1b}\n\
-    summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 3 {Marker:1b,Tags:[\"globalptr\"],CustomName:'\"globalptr\"',CustomNameVisible:1b}\n\
@@ -1567,18 +1565,14 @@ mod test {
 
             Instr::PushI32Const(42),
             Instr::PopI32Into(Register::Work(0, 0)),
-            Instr::SetLocalPtr(0),
-            Instr::StoreLocalI32(Register::Work(0, 0)),
+            Instr::StoreLocalI32(Register::Work(0, 0), 0),
 
             Instr::PushI32Const(27),
             Instr::PopI32Into(Register::Work(0, 0)),
-            Instr::SetLocalPtr(1),
-            Instr::StoreLocalI32(Register::Work(0, 0)),
+            Instr::StoreLocalI32(Register::Work(0, 0), 1),
 
-            Instr::SetLocalPtr(0),
-            Instr::LoadLocalI32(Register::Work(0, 0)),
-            Instr::SetLocalPtr(1),
-            Instr::LoadLocalI32(Register::Work(1, 0)),
+            Instr::LoadLocalI32(Register::Work(0, 0), 0),
+            Instr::LoadLocalI32(Register::Work(1, 0), 1),
 
             Instr::I32Op { dst: Register::Work(2, 0).as_lo(), lhs: Register::Work(0, 0).as_lo(), op: "/=", rhs: Register::Work(1, 0).as_lo().into() },
 

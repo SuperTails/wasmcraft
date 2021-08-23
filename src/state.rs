@@ -232,8 +232,6 @@ pub(crate) struct State {
 
     pub registers: RegFile<i32>,
 
-    local_ptr: u32,
-
     memory_ptr: u32,
 
     turtle: (i32, i32, i32),
@@ -269,7 +267,6 @@ impl State {
 			frames: Vec::new(),
 			stack: Stack::new(),
             registers,
-            local_ptr: 0,
             memory_ptr: 0,
             memory,
             turtle: (0, 0, 0),
@@ -479,30 +476,27 @@ impl State {
                     self.registers.set_half(r.as_lo(), 0);
                 },
 
-                SetLocalPtr(l) => {
-                    self.local_ptr = *l;
-                }
-                LoadLocalI64(r) => {
+                &LoadLocalI64(r, idx) => {
                     let f = self.frames.last().unwrap();
-                    let v = f.data[self.local_ptr as usize];
+                    let v = f.data[idx as usize];
                     println!("Loading {:?}", v);
-                    self.registers.set_pair(*r, v);
+                    self.registers.set_pair(r, v);
                 }
-                StoreLocalI64(r) => {
+                &StoreLocalI64(r, idx) => {
                     let f = self.frames.last_mut().unwrap();
-                    let v = self.registers.get_pair(*r)?;
+                    let v = self.registers.get_pair(r)?;
                     println!("Storing {:?}", v);
-                    f.data[self.local_ptr as usize] = v;
+                    f.data[idx as usize] = v;
                 }
-                LoadLocalI32(r) => {
+                &LoadLocalI32(r, idx) => {
                     let f = self.frames.last().unwrap();
-                    let v = f.data[self.local_ptr as usize].0;
-                    self.registers.set_i32(*r, v);
+                    let v = f.data[idx as usize].0;
+                    self.registers.set_i32(r, v);
                 }
-                StoreLocalI32(r) => {
+                &StoreLocalI32(r, idx) => {
                     let f = self.frames.last_mut().unwrap();
-                    let v = self.registers.get_i32(*r)?;
-                    f.data[self.local_ptr as usize].0 = v;
+                    let v = self.registers.get_i32(r)?;
+                    f.data[idx as usize].0 = v;
                 }
 
                 &I32MulTo64 { dst, lhs, rhs } => {

@@ -6,6 +6,6 @@ execute at @e[tag=frameptr] run fill ~ ~ ~ ~8 ~ ~1 minecraft:air
 # Comment(" Save return values")
 #  Save return values
 # PopI64Into(Return(0))
-scoreboard players operation %return%0%lo reg = %stack%0%lo reg
-scoreboard players operation %return%0%hi reg = %stack%0%hi reg
+scoreboard players operation %return%0%lo reg = %stack%0%lo%2%temp reg
+scoreboard players operation %return%0%hi reg = %stack%0%hi%2%temp reg
 scoreboard players set %%taken wasm 1

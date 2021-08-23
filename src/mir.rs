@@ -157,11 +157,10 @@ pub enum Instr {
     DynCall(Register, Option<u32>),
 
     /* Local instructions */
-    SetLocalPtr(u32),
-    LoadLocalI32(Register),
-    StoreLocalI32(Register),
-    LoadLocalI64(Register),
-    StoreLocalI64(Register),
+    LoadLocalI32(Register, u32),
+    StoreLocalI32(Register, u32),
+    LoadLocalI64(Register, u32),
+    StoreLocalI64(Register, u32),
 
     PushFrame(u32),
     PopFrame(u32),
@@ -247,18 +246,18 @@ impl Instr {
         }
     }
 
-    pub fn store_local(reg: Register, ty: Type) -> Self {
+    pub fn store_local(reg: Register, ty: Type, idx: u32) -> Self {
         match ty {
-            Type::I32 => Instr::StoreLocalI32(reg),
-            Type::I64 => Instr::StoreLocalI64(reg),
+            Type::I32 => Instr::StoreLocalI32(reg, idx),
+            Type::I64 => Instr::StoreLocalI64(reg, idx),
             _ => todo!("{:?}", ty)
         }
     }
 
-    pub fn load_local(reg: Register, ty: Type) -> Self {
+    pub fn load_local(reg: Register, ty: Type, idx: u32) -> Self {
         match ty {
-            Type::I32 => Instr::LoadLocalI32(reg),
-            Type::I64 => Instr::LoadLocalI64(reg),
+            Type::I32 => Instr::LoadLocalI32(reg, idx),
+            Type::I64 => Instr::LoadLocalI64(reg, idx),
             _ => todo!("{:?}", ty)
         }
     }
@@ -378,7 +377,6 @@ impl Instr {
             I64ExtendI32S { dst, src } => {},
             I32Eqz { val, cond } => {},
             SetGlobalPtr(_) => {},
-            SetLocalPtr(_) => {},
             PushFrame(_) => {},
             PopFrame(_) => {},
             Drop => op_stack.pop_value(),
@@ -405,11 +403,10 @@ impl Instr {
             Instr::Drop => InstrUses::none(),
             Instr::Call(_) => InstrUses::All(Usage::ReadWrite),
             Instr::DynCall(_, _) => InstrUses::All(Usage::ReadWrite),
-            Instr::SetLocalPtr(_) => InstrUses::none(),
-            Instr::LoadLocalI32(reg) => InstrUses::one(reg.as_lo(), Usage::Write),
-            Instr::StoreLocalI32(reg) => InstrUses::one(reg.as_lo(), Usage::Read),
-            Instr::LoadLocalI64(reg) => InstrUses::one_full(*reg, Usage::Write),
-            Instr::StoreLocalI64(reg) => InstrUses::one_full(*reg, Usage::Read),
+            Instr::LoadLocalI32(reg, _) => InstrUses::one(reg.as_lo(), Usage::Write),
+            Instr::StoreLocalI32(reg, _) => InstrUses::one(reg.as_lo(), Usage::Read),
+            Instr::LoadLocalI64(reg, _) => InstrUses::one_full(*reg, Usage::Write),
+            Instr::StoreLocalI64(reg, _) => InstrUses::one_full(*reg, Usage::Read),
             Instr::PushFrame(_) => InstrUses::none(),
             Instr::PopFrame(_) => InstrUses::none(),
             Instr::SetMemPtr(reg) => {
@@ -504,7 +501,6 @@ impl Instr {
             Instr::Drop => todo!(),
             Instr::Call(_) => todo!(),
             Instr::DynCall(_, _) => todo!(),
-            Instr::SetLocalPtr(_) => todo!(),
             Instr::PushFrame(_) => todo!(),
             Instr::StoreLocalI32(_) => todo!(),
             Instr::StoreLocalI64(_) => todo!(),
@@ -520,8 +516,8 @@ impl Instr {
             Instr::Comment(_) |
             Instr::Tellraw(_) |
             Instr::TurtleGet(_) |
-            Instr::LoadLocalI32(_) |
-            Instr::LoadLocalI64(_) |
+            Instr::LoadLocalI32(_, _) |
+            Instr::LoadLocalI64(_, _) |
             Instr::LoadI32(_, _) |
             Instr::LoadI32_8U(_, _) |
             Instr::LoadI32_8S(_, _) |
@@ -837,9 +833,7 @@ impl FuncBodyStream {
 
             let reg = Register::Param(param_idx as u32);
 
-            self.push_instr(Instr::SetLocalPtr(param_idx as u32));
-
-            self.push_instr(Instr::store_local(reg, *param));
+            self.push_instr(Instr::store_local(reg, *param, param_idx as u32));
         }
     }
 
@@ -952,13 +946,11 @@ impl FuncBodyStream {
     pub fn local_set(&mut self, local_index: u32, locals: &[(u32, Type)]) {
         let reg = self.work_reg(0);
 
-        self.push_instr(Instr::SetLocalPtr(local_index));
-
         let ty = get_local_ty(locals, local_index);
 
         self.push_instr(Instr::pop_into(reg, ty));
         self.op_stack.pop_ty(ty);
-        self.push_instr(Instr::store_local(reg, ty));
+        self.push_instr(Instr::store_local(reg, ty, local_index));
     }
 
     /// Grid calling convention:
@@ -1140,7 +1132,6 @@ impl FuncBodyStream {
                 /*
                 for l in 0..local_count {
                     let reg = self.work_reg(l);
-                    self.push_instr(Instr::SetLocalPtr(l));
                     self.push_instr(Instr::LoadLocalI32(reg));
 
                     let mut msg = r#"[{"text":"local "#.to_string();
@@ -1175,12 +1166,10 @@ impl FuncBodyStream {
                 self.local_set(local_index, locals);
             }
             LocalGet { local_index } => {
-                self.push_instr(Instr::SetLocalPtr(local_index));
-
                 let reg = self.work_reg(0);
                 let ty = get_local_ty(locals, local_index);
 
-                self.push_instr(Instr::load_local(reg, ty));
+                self.push_instr(Instr::load_local(reg, ty, local_index));
                 self.push_instr(Instr::push_from(reg, ty));
                 self.op_stack.push_ty(ty);
             }

@@ -275,24 +275,23 @@ impl<'a> CodeEmitter<'a> {
                 self.emit_pop_i64_into(reg);
             }
 
-            LoadLocalI64(reg) => {
-                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
-                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~1 RecordItem.tag.Memory 1", reg.get_hi()));
+            LoadLocalI64(reg, idx) => {
+                let x_off = -1 - (*idx as i32);
+                self.body.push(format!("execute at @e[tag=frameptr] store result score {} reg run data get block ~{} ~ ~ RecordItem.tag.Memory 1", reg.get_lo(), x_off));
+                self.body.push(format!("execute at @e[tag=frameptr] store result score {} reg run data get block ~{} ~ ~1 RecordItem.tag.Memory 1", reg.get_hi(), x_off));
             }
-            StoreLocalI64(reg) => {
-                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_hi()));
+            StoreLocalI64(reg, idx) => {
+                let x_off = -1 - (*idx as i32);
+                self.body.push(format!("execute at @e[tag=frameptr] store result block ~{} ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", x_off, reg.get_lo()));
+                self.body.push(format!("execute at @e[tag=frameptr] store result block ~{} ~ ~1 RecordItem.tag.Memory int 1 run scoreboard players get {} reg", x_off, reg.get_hi()));
             }
-            LoadLocalI32(reg) => {
-                self.body.push(format!("execute at @e[tag=localptr] store result score {} reg run data get block ~ ~ ~ RecordItem.tag.Memory 1", reg.get_lo()));
+            LoadLocalI32(reg, idx) => {
+                let x_off = -1 - (*idx as i32);
+                self.body.push(format!("execute at @e[tag=frameptr] store result score {} reg run data get block ~{} ~ ~ RecordItem.tag.Memory 1", reg.get_lo(), x_off));
             }
-            StoreLocalI32(reg) => {
-                self.body.push(format!("execute at @e[tag=localptr] store result block ~ ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", reg.get_lo()));
-            }
-
-
-            &SetLocalPtr(local_index) => {
-                self.body.push(format!("execute at @e[tag=frameptr] as @e[tag=localptr] run tp @s ~{} 0 1", -(local_index as i32) - 1 ));
+            StoreLocalI32(reg, idx) => {
+                let x_off = -1 - (*idx as i32);
+                self.body.push(format!("execute at @e[tag=frameptr] store result block ~{} ~ ~ RecordItem.tag.Memory int 1 run scoreboard players get {} reg", x_off, reg.get_lo()));
             }
 
             &AddI32Const(reg, value) => {
@@ -643,7 +642,6 @@ impl<'a> CodeEmitter<'a> {
             }
             LoadI32_8U(dst, _align) => {
                 self.body.push("function intrinsic:load_byte".to_string());
-                self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
                 // TODO: Determine if load_byte actually returns a byte
                 self.body.push(format!("scoreboard players operation {} reg = %param0%0 reg", dst.get_lo()));
             }
@@ -656,7 +654,6 @@ impl<'a> CodeEmitter<'a> {
             LoadI32_16U(dst, _align) => {
                 // TODO:
                 self.body.push("function intrinsic:load_halfword_unaligned".to_string());
-                self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
                 // TODO: Determine if load_halfword actually returns a halfword
                 self.body.push(format!("scoreboard players operation {} reg = %return%0 reg", dst.get_lo()));
             }
@@ -1478,8 +1475,6 @@ fn create_dyn_jumper(table: &crate::state::Table) -> String {
 }
 
 fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
-    let intrinsic_counts = INTRINSIC_COUNTS.get_or_init(get_intrinsic_counts);
-
     // Apply fixups
     for func_idx in 0..mc_functions.len() {
 
@@ -1524,6 +1519,8 @@ fn do_fixups(mc_functions: &mut Vec<(String, String)>) {
                     mc_functions[func_idx].1.replace_range(start..=end, &pos);
                 }
                 "COMMANDCOUNT" => {
+                    let intrinsic_counts = INTRINSIC_COUNTS.get_or_init(get_intrinsic_counts);
+
                     assert!(fixup_value.is_empty());
 
                     let body = &mc_functions[func_idx].1;
@@ -1586,7 +1583,6 @@ fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile, poo
     \n\
     # Remove old armor stand pointers\n\
     kill @e[tag=memoryptr]\n\
-    kill @e[tag=localptr]\n\
     kill @e[tag=frameptr]\n\
     kill @e[tag=stackptr]\n\
     kill @e[tag=turtle]\n\
@@ -1594,7 +1590,6 @@ fn create_setup_function(mc_functions: &[(String, String)], file: &WasmFile, poo
     \n\
     # Add armor stand pointers\n\
     summon minecraft:armor_stand 0 0 8 {Marker:1b,Tags:[\"memoryptr\"],CustomName:'\"memoryptr\"',CustomNameVisible:1b}\n\
-    summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"localptr\"],CustomName:'\"localptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 1 {Marker:1b,Tags:[\"frameptr\"],CustomName:'\"frameptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 0 {Marker:1b,Tags:[\"stackptr\"],CustomName:'\"stackptr\"',CustomNameVisible:1b}\n\
     summon minecraft:armor_stand 0 0 -2 {Marker:1b,Tags:[\"turtle\"],CustomName:'\"turtle\"',CustomNameVisible:1b}\n\
