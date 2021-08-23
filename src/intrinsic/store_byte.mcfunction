@@ -1,11 +1,10 @@
+# This assumes the memory pointer is already at the correct location
 # arguments:
 # %ptr - The location to write to
 # %param2%0 - The byte to write
 
 scoreboard players operation %tempsave_store_byte reg = %param2%0 reg
 scoreboard players operation %param2%0 reg %= %%256 reg
-
-function intrinsic:setptr
 
 execute at @e[tag=memoryptr] store result score %param0%0 reg run data get block ~ ~ ~ RecordItem.tag.Memory 1
 

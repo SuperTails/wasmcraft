@@ -1,19 +1,23 @@
 scoreboard players operation %ptr rust = %%temp1_memcpy rust
 
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %%temp4_memcpy rust = %param0%0 rust
 
 scoreboard players add %ptr rust 1
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %param0%0 rust *= %%256 rust
 scoreboard players operation %%temp4_memcpy rust += %param0%0 rust
 
 scoreboard players add %ptr rust 1
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %param0%0 rust *= %%65536 rust
 scoreboard players operation %%temp4_memcpy rust += %param0%0 rust
 
 scoreboard players add %ptr rust 1
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %param0%0 rust *= %%16777216 rust
 scoreboard players operation %%temp4_memcpy rust += %param0%0 rust

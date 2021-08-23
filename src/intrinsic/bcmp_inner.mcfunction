@@ -1,8 +1,10 @@
 scoreboard players operation %ptr rust = %%temp0_bcmp rust
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %%temp3_bcmp rust = %param0%0 rust
 
 scoreboard players operation %ptr rust = %%temp1_bcmp rust
+function intrinsic:setptr
 function intrinsic:load_byte
 scoreboard players operation %%temp4_bcmp rust = %param0%0 rust
 

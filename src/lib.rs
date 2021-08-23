@@ -11,7 +11,7 @@ use datapack_common::functions::command_components::{ScoreHolder, Objective};
 use datapack_common::functions::command_components::FunctionIdent as FunctionId;
 
 use code_emitter::{CodeEmitter, ConstantPool, assemble};
-use mir::{Axis, BranchTarget, Instr, MirBasicBlock, Relation, compile, get_next_state};
+use mir::{Axis, BranchTarget, Instr, MirBasicBlock, Relation, Terminator, compile, get_next_state};
 
 use datapack_vm::interpreter::Interpreter;
 use wasm::{ExportList, GlobalList, MemoryList, WasmFile, parse_wasm_file};
@@ -19,7 +19,7 @@ use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 use std::str;
 use once_cell::sync::OnceCell;
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use state::State;
 
@@ -89,9 +89,9 @@ impl<T> BasicBlock<T> {
 //      Run the CMD to a sync point, because we know the beginning of the target block has one.
 
 impl MirBasicBlock {
-    fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>, pool: &mut ConstantPool) -> BasicBlock<String> {
+    fn lower(&self, bb_idx: usize, insert_sync: bool, state_info: Option<&StateInfo>, pool: &mut ConstantPool, call_graph: &CallGraph) -> BasicBlock<String> {
         // TODO: Should I use a virtual stack always?
-        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info, pool, self.label.func_idx);
+        let instrs = CodeEmitter::emit_all(self, Some(bb_idx), true, insert_sync, state_info, pool, self.label.func_idx, Some(call_graph));
 
         BasicBlock {
             op_stack: self.op_stack.clone(),
@@ -406,13 +406,13 @@ pub struct StateInfo {
 }
 
 impl StateInfo {
-    fn new(basic_block: &MirBasicBlock, entry: RealOpStack) -> Self {
-        let exit = get_next_state(basic_block, entry.clone());
+    fn new(basic_block: &MirBasicBlock, entry: RealOpStack, call_graph: &CallGraph) -> Self {
+        let exit = get_next_state(basic_block, entry.clone(), call_graph);
         StateInfo { entry, exit }
     }
 }
 
-fn find_real_stack_sizes(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
+fn find_real_stack_sizes(basic_blocks: &[MirBasicBlock], call_graph: &CallGraph) -> Vec<StateInfo> {
     let mut states = BTreeMap::new();
 
     let entry_state = if BRANCH_CONV == BranchConv::Direct {
@@ -429,7 +429,7 @@ fn find_real_stack_sizes(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
         }
     };
 
-    let start_state = StateInfo::new(&basic_blocks[0], entry_state);
+    let start_state = StateInfo::new(&basic_blocks[0], entry_state, call_graph);
 
     states.insert(0, start_state);
 
@@ -449,7 +449,7 @@ fn find_real_stack_sizes(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
             };
 
             if changed {
-                let next_info = StateInfo::new(next_block, next_state.clone());
+                let next_info = StateInfo::new(next_block, next_state.clone(), call_graph);
                 states.insert(*next_idx, next_info);
                 to_visit.push(*next_idx);
             }
@@ -502,6 +502,67 @@ impl std::fmt::Display for BlockPos {
     }
 }
 
+pub struct CallGraph(HashMap<CodeFuncIdx, HashSet<CodeFuncIdx>>);
+
+impl CallGraph {
+    pub fn new() -> Self {
+        CallGraph(HashMap::new())
+    }
+
+    pub fn build(blocks: &[MirBasicBlock]) -> Self {
+        let mut result = CallGraph::new();
+
+        for block in blocks.iter() {
+            let caller = block.label.func_idx;
+
+            for instr in block.instrs.iter() {
+                match instr {
+                    Instr::Call(callee) => result.add_edge(caller, *callee),
+                    Instr::DynCall(_, _) => todo!(),
+                    _ => {}
+                }
+            }
+
+            match &block.terminator {
+                Terminator::Call { func_idx, .. } => result.add_edge(caller, *func_idx),
+                Terminator::DynCall { .. } => todo!(),
+                _ => {}
+            }
+        }
+
+        result
+    }
+
+    pub fn add_edge(&mut self, caller: CodeFuncIdx, callee: CodeFuncIdx) {
+        self.0.entry(caller).or_insert_with(HashSet::new).insert(callee);
+    }
+
+    pub fn can_reach(&self, caller: CodeFuncIdx, callee: CodeFuncIdx) -> bool {
+        let mut visited = HashSet::new();
+
+        let mut queue = vec![caller];
+
+        while let Some(next) = queue.pop() {
+            if visited.contains(&next) {
+                continue
+            }
+
+            if next == callee {
+                return true;
+            }
+
+            visited.insert(next);
+
+            if let Some(dests) = self.0.get(&next) {
+                for dest in dests.iter() {
+                    queue.push(*dest);
+                }
+            }
+        }
+
+        false
+    }
+}
 
 fn save_datapack(folder_path: &Path, mc_functions: Vec<(String, String)>) {
     let datapack = datapack::Datapack::new();
@@ -859,20 +920,22 @@ impl<'a> Iterator for BBGroupBy<'a> {
     }
 }
 
-fn get_stack_states(basic_blocks: &[MirBasicBlock]) -> Vec<StateInfo> {
+fn get_stack_states(basic_blocks: &[MirBasicBlock], call_graph: &CallGraph) -> Vec<StateInfo> {
     let mut stack_states = Vec::new();
     
     let iter = BBGroupBy { list: basic_blocks };
 
     for group in iter {
-        stack_states.extend(find_real_stack_sizes(group));
+        stack_states.extend(find_real_stack_sizes(group, call_graph));
     }
 
     stack_states
 }
 
 fn optimize_mir(basic_blocks: &mut [MirBasicBlock]) {
-    let stack_states = get_stack_states(basic_blocks);
+    let call_graph = CallGraph::build(basic_blocks);
+    
+    let stack_states = get_stack_states(basic_blocks, &call_graph);
 
     for (bb, state) in basic_blocks.iter_mut().zip(stack_states.iter()) {
         if bb.instrs.is_empty() {

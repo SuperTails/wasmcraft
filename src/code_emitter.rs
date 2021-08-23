@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{BRANCH_CONV, BranchConv, BranchTarget, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_entry_point, get_intrinsic_counts, get_stack_states, get_tables};
+use crate::{BRANCH_CONV, BranchConv, BranchTarget, CallGraph, CodeFuncIdx, HalfRegister, INTRINSIC_COUNTS, Label, OpStack, RealOpStack, Register, StateInfo, get_block_name, get_entry_point, get_intrinsic_counts, get_stack_states, get_tables};
 use crate::wasm::WasmFile;
 use crate::mir::{FuncBodyStream, Instr, MirBasicBlock, RegOrConst, Relation, Terminator};
 use wasmparser::{ExternalKind, Type, TypeOrFuncType};
@@ -52,10 +52,12 @@ pub struct CodeEmitter<'a> {
     constant_pool: &'a mut ConstantPool,
 
     func_idx: CodeFuncIdx,
+
+    call_graph: Option<&'a CallGraph>,
 }
 
 impl<'a> CodeEmitter<'a> {
-    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx) -> Self {
+    pub fn new(bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, label: Option<Label>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx, call_graph: Option<&'a CallGraph>) -> Self {
         if bb_idx.is_none() {
             assert!(!use_virt_stack);
             assert!(!insert_sync);
@@ -80,6 +82,7 @@ impl<'a> CodeEmitter<'a> {
             label,
             constant_pool,
             func_idx,
+            call_graph,
         };
         
         emitter.emit_sync();
@@ -99,12 +102,12 @@ impl<'a> CodeEmitter<'a> {
         self.body
     }
 
-    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx) -> Vec<String> {
+    pub fn emit_all(basic_block: &MirBasicBlock, bb_idx: Option<usize>, use_virt_stack: bool, insert_sync: bool, state_info: Option<&'a StateInfo>, constant_pool: &'a mut ConstantPool, func_idx: CodeFuncIdx, call_graph: Option<&'a CallGraph>) -> Vec<String> {
         println!("\nSTARTING {:?}", basic_block.label);
         println!("{:?}", state_info);
 
         // The real stack has 1 entry: the return address
-        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()), constant_pool, func_idx);
+        let mut emitter = Self::new(bb_idx, use_virt_stack, insert_sync, state_info, Some(basic_block.label.clone()), constant_pool, func_idx, call_graph);
         for i in basic_block.instrs.iter() {
             emitter.emit(i);
         }
@@ -239,7 +242,16 @@ impl<'a> CodeEmitter<'a> {
             }
 
             Call(i) => {
-                self.emit_stack_save();
+                let needs_save = if let Some(call_graph) = &self.call_graph {
+                    call_graph.can_reach(*i, self.func_idx)
+                } else {
+                    // Pessimistic assumption
+                    true
+                };
+
+                if needs_save {
+                    self.emit_stack_save();
+                }
 
                 let name = get_entry_point(*i);
                 self.body.push(format!("function wasm:{}", name));
@@ -627,7 +639,7 @@ impl<'a> CodeEmitter<'a> {
             PushReturnAddress(label) => {
                 let return_name = get_block_name(label);
 
-                self.emit_stack_save();
+                //self.emit_stack_save();
 
                 self.body.push(format!("execute at @e[tag=stackptr] run data modify block ~ ~ ~ RecordItem.tag.Memory set value !BLOCKIDX!{}!", return_name));
                 Self::incr_stack_ptr(&mut self.body);
@@ -1281,7 +1293,15 @@ impl<'a> CodeEmitter<'a> {
     fn jump(&mut self, entry: &Label) {
         if let Some(label) = &self.label {
             if label.func_idx != entry.func_idx {
-                self.emit_stack_save();
+                let needs_save = if let Some(call_graph) = self.call_graph {
+                    call_graph.can_reach(entry.func_idx, label.func_idx)
+                } else {
+                    true
+                };
+
+                if needs_save {
+                    self.emit_stack_save();
+                }
             } else if let Some(info) = self.state_info {
                 let state = &info.exit.iter().find(|(idx, _state)| *idx == entry.idx).unwrap().1;
                 assert_eq!(self.op_stack.stack, state.stack);
@@ -1369,14 +1389,16 @@ pub fn assemble(basic_blocks: &[MirBasicBlock], file: &WasmFile, insert_sync: bo
 
     println!("Started getting stack states");
 
-    let stack_states = get_stack_states(basic_blocks);
+    let call_graph = CallGraph::build(basic_blocks);
+
+    let stack_states = get_stack_states(basic_blocks, &call_graph);
 
     println!("Done getting stack states");
 
     let mut pool = ConstantPool::new();
 
     for (bb_idx, bb) in basic_blocks.iter().enumerate() {
-        let mut new_block = bb.lower(bb_idx, insert_sync, Some(&stack_states[bb_idx]), &mut pool);
+        let mut new_block = bb.lower(bb_idx, insert_sync, Some(&stack_states[bb_idx]), &mut pool, &call_graph);
         let name = get_block_name(&new_block.label);
 
         //new_block.instrs.insert(0, r#"tellraw @a [{"text":"stackptr is "},{"score":{"name":"%stackptr","objective":"wasm"}}]"#.to_string());
@@ -1440,7 +1462,7 @@ fn create_return_jumper(basic_blocks: &[MirBasicBlock]) -> String {
     let mut pool = ConstantPool::new();
 
     // FIXME: FUNCTION INDEX
-    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0));
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0), None);
     emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
@@ -1465,7 +1487,7 @@ fn create_dyn_jumper(table: &crate::state::Table) -> String {
     let mut pool = ConstantPool::new();
 
     // FIXME: FUNCTION INDEX
-    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0));
+    let mut emitter = CodeEmitter::new(None, false, false, None, None, &mut pool, CodeFuncIdx(0), None);
     emitter.lower_branch_table(Register::Temp(0), targets, None);
     let dyn_branch = emitter.finalize();
 
@@ -1711,7 +1733,7 @@ fn create_caller_function(mc_functions: &[(String, String)], index: CodeFuncIdx,
     let mut pool = ConstantPool::new();
 
     // FIXME: FUNCTION INDEX
-    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None, &mut pool, CodeFuncIdx(0));
+    let mut body = CodeEmitter::emit_all(&f.basic_blocks[0], None, false, false, None, &mut pool, CodeFuncIdx(0), None);
 
     assert!(pool.is_empty());
 

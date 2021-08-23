@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::{BRANCH_CONV, BranchConv, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
+use crate::{BRANCH_CONV, BranchConv, CallGraph, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
 use wasmparser::{FuncType, MemoryImmediate, Operator, Type, TypeDef, TypeOrFuncType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -617,7 +617,7 @@ pub fn get_next_blocks(basic_block: &MirBasicBlock) -> Vec<usize> {
     }
 }
 
-pub fn get_next_state(basic_block: &MirBasicBlock, entry_state: RealOpStack) -> Vec<(usize, RealOpStack)> {
+pub fn get_next_state(basic_block: &MirBasicBlock, entry_state: RealOpStack, call_graph: &CallGraph) -> Vec<(usize, RealOpStack)> {
     let mut state = entry_state;
 
     for instr in basic_block.instrs.iter() {
@@ -632,9 +632,13 @@ pub fn get_next_state(basic_block: &MirBasicBlock, entry_state: RealOpStack) -> 
             Instr::PushI64From(..) => state.push_i64(),
             Instr::PopI32Into(..) => { state.pop_i32(); },
             Instr::PopI64Into(..) => { state.pop_i64(); },
-            Instr::Call { .. } |
+            Instr::Call(idx) => {
+                if call_graph.can_reach(*idx, basic_block.label.func_idx) {
+                    state.reify_all();
+                }
+            }
             Instr::DynCall { .. } => {
-                state.reify_all();
+                todo!()
             },
             _ => {}
         }
@@ -658,11 +662,15 @@ pub fn get_next_state(basic_block: &MirBasicBlock, entry_state: RealOpStack) -> 
             result.extend(default.iter().map(|t| (&t.label, false, t)));
             result
         }
-        Terminator::Call { func_idx: _, return_addr } => {
-            vec![(return_addr, true, &dummy_branch)]
+        Terminator::Call { func_idx, return_addr } => {
+            let needs_save = call_graph.can_reach(*func_idx, basic_block.label.func_idx);
+
+            vec![(return_addr, needs_save, &dummy_branch)]
         }
         Terminator::DynCall { reg: _, table_index: _, return_addr } => {
-            vec![(return_addr, true, &dummy_branch)]
+            let needs_save = todo!();
+
+            vec![(return_addr, needs_save, &dummy_branch)]
         }
         Terminator::DynBranch(_, _) => Vec::new(),
     };

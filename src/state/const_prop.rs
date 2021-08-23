@@ -71,8 +71,6 @@ impl<'a> ConstProp<'a> {
 
     pub fn run(&mut self) {
         while !self.step().unwrap() {}
-
-        println!("ran {} things", self.pc);
     }
 
     // Returns true when halted
@@ -256,6 +254,19 @@ impl<'a> ConstProp<'a> {
                 let v = read(self.registers.get_half(reg.as_lo()))?;
                 self.registers.set_half(reg.as_lo(), v.map(|val| val as i16 as i32));
             }, 
+
+            Instr::I32Popcnt(reg) => {
+                let v = read(self.registers.get_half(*reg))?;
+                self.registers.set_half(*reg, v.map(|val| val.count_ones() as i32));
+            },
+            Instr::I32Ctz(reg) => {
+                let v = read(self.registers.get_half(reg.as_lo()))?;
+                self.registers.set_half(reg.as_lo(), v.map(|val| val.trailing_zeros() as i32));
+            }
+            Instr::I32Clz(reg) => {
+                let v = read(self.registers.get_half(reg.as_lo()))?;
+                self.registers.set_half(reg.as_lo(), v.map(|val| val.leading_zeros() as i32));
+            },
             
             Instr::SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => {
                 let cond = read(self.registers.get_half(cond_reg.as_lo()))?;
@@ -280,10 +291,6 @@ impl<'a> ConstProp<'a> {
             }
 
             /*
-            Instr::I32Popcnt(_) => todo!(),
-            Instr::I32Ctz(_) => todo!(),
-            Instr::I32Clz(_) => todo!(),
-
             Instr::I64Add { dst, lhs, rhs } => todo!(),
             Instr::I64DivS { dst, lhs, rhs } => todo!(),
             Instr::I64DivU { dst, lhs, rhs } => todo!(),
@@ -301,12 +308,11 @@ impl<'a> ConstProp<'a> {
             Instr::I32MulTo64 { dst, lhs, rhs } => todo!(),
             Instr::I64Clz { dst, src } => todo!(),
             Instr::I64Ctz { dst, src } => todo!(),
-            Instr::StoreRow(_) => todo!(),
             Instr::I64ExtendI32S { dst, src } => todo!(),
             Instr::I64ExtendI32U(_) => todo!(),
             Instr::I64Eqz { val, cond } => todo!(),
-            Instr::SelectI32 { dst_reg, true_reg, false_reg, cond_reg } => todo!(),
-            Instr::SelectI64 { dst_reg, true_reg, false_reg, cond_reg } => todo!(),
+
+            Instr::StoreRow(_) => todo!(),
             Instr::Unreachable => todo!(),
             */
         }

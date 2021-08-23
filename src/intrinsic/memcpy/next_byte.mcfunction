@@ -1,10 +1,12 @@
 # temp = *src
 scoreboard players operation %ptr rust = %%temp1_memcpy rust
+function intrinsic:setptr
 function intrinsic:load_byte
 
 # *dest = temp
 scoreboard players operation %param2%0 rust = %param0%0 rust
 scoreboard players operation %ptr rust = %%temp0_memcpy rust
+function intrinsic:setptr
 function intrinsic:store_byte
 
 # src += 1
