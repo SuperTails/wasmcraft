@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::{BRANCH_CONV, BranchConv, CallGraph, CodeFuncIdx, HalfRegister, Label, OpStack, RealOpStack, Register, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
+use crate::{BRANCH_CONV, BranchConv, CallGraph, CodeFuncIdx, HalfRegister, InstrUses, Label, OpStack, RealOpStack, Register, Usage, get_entry_point, get_local_ty, wasm::{FunctionList, MemoryList, TypeList, WasmFile}};
 use wasmparser::{FuncType, MemoryImmediate, Operator, Type, TypeDef, TypeOrFuncType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,81 +49,6 @@ impl fmt::Display for RegOrConst {
         match self {
             RegOrConst::Reg(r) => write!(f, "{}", r),
             RegOrConst::Const(c) => write!(f, "%%{}", c),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Usage {
-    Read,
-    Write,
-    ReadWrite,
-}
-
-impl Usage {
-    pub fn combine(self, other: Self) -> Self {
-        match (self, other) {
-            (Usage::Read, Usage::Read) => Usage::Read,
-            (Usage::Write, Usage::Write) => Usage::Write,
-            _ => Usage::ReadWrite,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum InstrUses {
-    All(Usage),
-    Some(HashMap<HalfRegister, Usage>),
-}
-
-impl InstrUses {
-    pub fn none() -> Self {
-        InstrUses::Some(HashMap::new())
-    }
-
-    pub fn one(reg: HalfRegister, usage: Usage) -> Self {
-        InstrUses::Some(Some((reg, usage)).into_iter().collect())
-    }
-
-    pub fn one_full(reg: Register, usage: Usage) -> Self {
-        InstrUses::Some(vec![(reg.as_lo(), usage), (reg.as_hi(), usage)].into_iter().collect())
-    }
-
-    pub fn add(&mut self, reg: HalfRegister, usage: Usage) {
-        match self {
-            InstrUses::All(u) => *u = u.combine(usage),
-            InstrUses::Some(map) => {
-                if let Some(existing) = map.get_mut(&reg) {
-                    *existing = existing.combine(usage);
-                } else {
-                    map.insert(reg, usage);
-                }
-            }
-        }
-    }
-
-    pub fn some<T>(data: T) -> Self
-        where T: IntoIterator<Item=(HalfRegister, Usage)>,
-    {
-        let mut uses = InstrUses::none();
-
-        for (reg, usage) in data {
-            uses.add(reg, usage);
-        }
-
-        uses
-    }
-
-    pub fn some_full<T>(data: T) -> Self
-        where T: IntoIterator<Item=(Register, Usage)>,
-    {
-        Self::some(data.into_iter().flat_map(|(r, u)| [(r.as_lo(), u), (r.as_hi(), u)]))
-    }
-
-    pub fn get(&self, reg: HalfRegister) -> Option<Usage> {
-        match self {
-            InstrUses::All(u) => Some(*u),
-            InstrUses::Some(map) => map.get(&reg).copied(),
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{HalfRegister, mir::{Instr, InstrUses, MirBasicBlock, Usage}};
+use crate::{HalfRegister, InstrUses, Usage, mir::{Instr, MirBasicBlock}};
 
 use super::OptAction;
 
@@ -14,7 +14,7 @@ pub(crate) fn get_actions(basic_block: &MirBasicBlock) -> Vec<OptAction> {
 
             for idx in start_idx + 1..end_idx {
                 let uses = basic_block.instrs[idx].get_uses();
-                if uses.get(reg).is_none() {
+                if uses.get(&reg).is_none() {
                     // This instruction is irrelevant
                     continue;
                 }
@@ -81,7 +81,7 @@ pub fn candidate_writes<'a>(basic_block: &'a MirBasicBlock) -> impl Iterator<Ite
 /// Finishing writes are ones that strictly write to the given register
 pub fn find_finishing_write(basic_block: &MirBasicBlock, search_start: usize, reg: HalfRegister) -> Option<usize> {
     basic_block.instrs.iter().enumerate().skip(search_start).find_map(|(idx, instr)| {
-        if instr.get_uses().get(reg) == Some(Usage::Write) {
+        if instr.get_uses().get(&reg) == Some(Usage::Write) {
             Some(idx)
         } else {
             None

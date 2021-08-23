@@ -502,6 +502,105 @@ impl std::fmt::Display for BlockPos {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Usage {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl Usage {
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Usage::Read, Usage::Read) => Usage::Read,
+            (Usage::Write, Usage::Write) => Usage::Write,
+            _ => Usage::ReadWrite,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum UseSet<T> {
+    All(Usage),
+    Some(HashMap<T, Usage>),
+}
+
+impl<T: std::hash::Hash + Eq> UseSet<T> {
+    pub fn none() -> Self {
+        UseSet::Some(HashMap::new())
+    }
+
+    pub fn one(reg: T, usage: Usage) -> Self {
+        UseSet::Some(Some((reg, usage)).into_iter().collect())
+    }
+
+    pub fn add(&mut self, reg: T, usage: Usage) {
+        match self {
+            UseSet::All(u) => *u = u.combine(usage),
+            UseSet::Some(map) => {
+                if let Some(existing) = map.get_mut(&reg) {
+                    *existing = existing.combine(usage);
+                } else {
+                    map.insert(reg, usage);
+                }
+            }
+        }
+    }
+
+    pub fn merge(&mut self, other: UseSet<T>) {
+        // Not entirely sure why the `self2` bindings are necessary...
+        match (self, other) {
+            (self2, UseSet::Some(s)) => {
+                for (r, u) in s {
+                    self2.add(r, u);
+                }
+            }
+            (self2 @ UseSet::Some(_), mut other @ UseSet::All(_)) => {
+                std::mem::swap(self2, &mut other);
+                self2.merge(other);
+            }
+            (UseSet::All(this), UseSet::All(other)) => {
+                *this = this.combine(other)
+            }
+        }
+    }
+
+    pub fn some<I>(data: I) -> Self
+        where I: IntoIterator<Item=(T, Usage)>,
+    {
+        let mut uses = UseSet::none();
+
+        for (reg, usage) in data {
+            uses.add(reg, usage);
+        }
+
+        uses
+    }
+
+    pub fn get(&self, reg: &T) -> Option<Usage> {
+        match self {
+            UseSet::All(u) => Some(*u),
+            UseSet::Some(map) => map.get(reg).copied(),
+        }
+    }
+}
+
+pub type InstrUses = UseSet<HalfRegister>;
+
+impl InstrUses {
+    pub fn one_full(reg: Register, usage: Usage) -> Self {
+        InstrUses::Some(vec![(reg.as_lo(), usage), (reg.as_hi(), usage)].into_iter().collect())
+    }
+
+    pub fn some_full<T>(data: T) -> Self
+        where T: IntoIterator<Item=(Register, Usage)>,
+    {
+        Self::some(data.into_iter().flat_map(|(r, u)| [(r.as_lo(), u), (r.as_hi(), u)]))
+    }
+}
+
+pub type CmdUses = UseSet<datapack_common::functions::command_components::ScoreboardPlayer>;
+
 pub struct CallGraph(HashMap<CodeFuncIdx, HashSet<CodeFuncIdx>>);
 
 impl CallGraph {
