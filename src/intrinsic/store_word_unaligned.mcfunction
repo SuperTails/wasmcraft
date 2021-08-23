@@ -9,6 +9,7 @@ scoreboard players operation %%temp0_swu reg = %param0%0 reg
 # FIXME: This may not actually work like an `and`
 scoreboard players operation %param2%0 reg = %%temp0_swu reg
 scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
 function intrinsic:store_byte
 scoreboard players add %ptr reg 1
 
@@ -17,6 +18,7 @@ scoreboard players set %param1%0 reg 8
 function intrinsic:lshr
 scoreboard players operation %param2%0 reg = %param0%0 reg
 scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
 function intrinsic:store_byte
 scoreboard players add %ptr reg 1
 
@@ -25,6 +27,7 @@ scoreboard players set %param1%0 reg 16
 function intrinsic:lshr
 scoreboard players operation %param2%0 reg = %param0%0 reg
 scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
 function intrinsic:store_byte
 scoreboard players add %ptr reg 1
 
@@ -33,4 +36,5 @@ scoreboard players set %param1%0 reg 24
 function intrinsic:lshr
 scoreboard players operation %param2%0 reg = %param0%0 reg
 scoreboard players operation %param2%0 reg %= %%256 reg
+function intrinsic:setptr
 function intrinsic:store_byte
